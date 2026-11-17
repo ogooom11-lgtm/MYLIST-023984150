@@ -19,6 +19,7 @@ import '../database_service.dart';
 import '../models.dart';
 import '../services/all_stats_prefs.dart';
 import '../services/destinations.dart';
+import '../services/detection/header_format.dart';
 import '../services/detection/text_tokens.dart' show normalizeArabic;
 import '../services/settings_words.dart';
 import '../services/trace/trace_service.dart';
@@ -155,6 +156,17 @@ class _SettingsScreenState extends State<SettingsScreen>
           ),
           wordTile(WordListKind.cancelKeyword),
           wordTile(WordListKind.editKeyword),
+          wordTile(WordListKind.allowedName),
+          _HubTile(
+            icon: Icons.rule_rounded,
+            color: _kBlue,
+            title: 'صيغ الرسائل',
+            subtitle: 'أضف صيغة يعرفها التطبيق عند تحليل الرسائل',
+            count: s.customHeaderFormats.length,
+            searchText: 'صيغه فاصل هيدر تاريخ تعرف رسائل بداية',
+            contents: s.customHeaderFormats,
+            onTap: () => _open(_HeaderFormatsPage(store: _store)),
+          ),
         ],
       ),
       _HubGroup(
@@ -501,6 +513,8 @@ class _SettingsStore extends ChangeNotifier {
     bubbleQuickActions: s.bubbleQuickActions.map((a) => a.copy()).toList(),
     forbiddenWords: List<String>.from(s.forbiddenWords),
     forbiddenPhrases: List<String>.from(s.forbiddenPhrases),
+    nameAllowedWords: List<String>.from(s.nameAllowedWords),
+    customHeaderFormats: List<String>.from(s.customHeaderFormats),
     bubbleUiPrefs: Map<String, dynamic>.from(s.bubbleUiPrefs),
     destinationMap: Map<String, String>.from(s.destinationMap),
     destinationInfo: {
@@ -636,6 +650,52 @@ class _SettingsStore extends ChangeNotifier {
 
   void removeWordValue(String word) {
     if (settings.amountWordValues.remove(word) != null) changed();
+  }
+
+  // ---------------- صيغ الهيدر ----------------
+
+  /// يضيف صيغة. يعيد null إذا نجحت، أو رسالة الخطأ.
+  String? addHeaderFormat(String raw) {
+    final t = raw.trim();
+    if (t.isEmpty) return 'اكتب الصيغة أولًا';
+    try {
+      HeaderFormat.compile(t);
+    } on HeaderFormatException catch (e) {
+      return e.message;
+    } catch (_) {
+      return 'صيغة غير صالحة';
+    }
+    final list = settings.customHeaderFormats;
+    if (list.any((e) => _same(e, t))) return 'الصيغة موجودة مسبقًا';
+    list.add(t);
+    changed();
+    return null;
+  }
+
+  void removeHeaderFormat(String template) {
+    if (settings.customHeaderFormats.remove(template)) changed();
+  }
+
+  /// يعدّل صيغة. يعيد null إذا نجحت، أو رسالة الخطأ.
+  String? editHeaderFormat(String oldTemplate, String raw) {
+    final t = raw.trim();
+    if (t.isEmpty) return 'اكتب الصيغة أولًا';
+    try {
+      HeaderFormat.compile(t);
+    } on HeaderFormatException catch (e) {
+      return e.message;
+    } catch (_) {
+      return 'صيغة غير صالحة';
+    }
+    final list = settings.customHeaderFormats;
+    final i = list.indexOf(oldTemplate);
+    if (i < 0) return 'الصيغة غير موجودة';
+    if (list.any((e) => e != oldTemplate && _same(e, t))) {
+      return 'الصيغة موجودة مسبقًا';
+    }
+    list[i] = t;
+    changed();
+    return null;
   }
 
   // ---------------- العملات ----------------
@@ -1030,6 +1090,18 @@ const List<_WordSpec> _wordSpecs = [
     color: _kAmber,
     keywords: 'تعديل تصحيح تغيير',
     presets: ['تعديل', 'تعديل:', 'تصحيح', 'عدل'],
+  ),
+  _WordSpec(
+    kind: WordListKind.allowedName,
+    title: 'كلمات ورموز مسموحة للاسم',
+    subtitle: 'لا تقطع الاسم وتنضم إليه أثناء التحديد',
+    description:
+        'كلمات أو رموز (مثل: أبو، آل، /، -) لا تقطع امتداد الاسم عند تحديده، بل تدخل معه ضمن الاسم المحدد.',
+    hint: 'أضف كلمة أو رمزًا، مثل: أبو',
+    icon: Icons.playlist_add_check_rounded,
+    color: _kGreen,
+    keywords: 'اسم مسموح رمز ضم دمج',
+    presets: ['أبو', 'آل', '/', '-', '+'],
   ),
   _WordSpec(
     kind: WordListKind.forbidden,
@@ -4712,6 +4784,324 @@ class _TextPromptDialogState extends State<_TextPromptDialog> {
       ),
     );
   }
+}
+
+// =============================================================
+// صفحة «صيغ الرسائل» (هيدر يتعرف عليه التطبيق عند التحليل)
+// =============================================================
+
+class _HeaderFormatsPage extends StatefulWidget {
+  final _SettingsStore store;
+
+  const _HeaderFormatsPage({required this.store});
+
+  @override
+  State<_HeaderFormatsPage> createState() => _HeaderFormatsPageState();
+}
+
+class _HeaderFormatsPageState extends State<_HeaderFormatsPage> {
+  final _ctrl = TextEditingController();
+  String _text = '';
+
+  _SettingsStore get _store => widget.store;
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  /// ترجمة حية للقالب المكتوب: (error أو sample)
+  ({String? error, String? sample}) _preview(String raw) {
+    final t = raw.trim();
+    if (t.isEmpty) return (error: null, sample: null);
+    try {
+      HeaderFormat.compile(t);
+      return (error: null, sample: _sampleLine(t));
+    } on HeaderFormatException catch (e) {
+      return (error: e.message, sample: null);
+    } catch (_) {
+      return (error: 'صيغة غير صالحة', sample: null);
+    }
+  }
+
+  /// سطر مثال يطابق القالب (لمعاينة ما سيتعرف عليه التطبيق)
+  String _sampleLine(String t) => t.replaceAllMapped(
+    RegExp(
+      r'\{\s*(day|month|year|hour|minute|name)\s*\}',
+      caseSensitive: false,
+    ),
+    (m) {
+      switch (m.group(1)!.toLowerCase()) {
+        case 'day':
+          return '17';
+        case 'month':
+          return '11';
+        case 'year':
+          return '2026';
+        case 'hour':
+          return '08';
+        case 'minute':
+          return '50';
+        case 'name':
+          return 'aaa';
+        default:
+          return m.group(0)!;
+      }
+    },
+  );
+
+  void _add() {
+    final err = _store.addHeaderFormat(_ctrl.text);
+    if (err != null) {
+      _snack(context, err);
+      return;
+    }
+    _ctrl.clear();
+    setState(() => _text = '');
+    _snack(context, 'أُضيفت الصيغة — ستُستخدم عند التحليل من الآن');
+  }
+
+  Future<void> _edit(String template) async {
+    final value = await _promptText(
+      context,
+      title: 'تعديل الصيغة',
+      initial: template,
+      hint: r'مثال: [{day}/{month}, {hour}:{minute}] {name}:',
+      icon: Icons.rule_rounded,
+    );
+    if (value == null || value == template || !mounted) return;
+    final err = _store.editHeaderFormat(template, value);
+    if (err != null) _snack(context, err);
+  }
+
+  void _remove(String template) {
+    _store.removeHeaderFormat(template);
+    _snack(
+      context,
+      'حُذفت الصيغة',
+      onUndo: () => _store.addHeaderFormat(template),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return _SubPageScaffold(
+      store: _store,
+      title: 'صيغ الرسائل',
+      icon: Icons.rule_rounded,
+      color: _kBlue,
+      description:
+          'الصيغ التي يتعرف عليها التطبيق كبداية للرسالة عند التحليل (مثل هيدر '
+          'واتساب [17/11، 08:50] الاسم:). أضف صيغًا بنفسك، وإذا لقى التطبيق '
+          'صيغة قريبة غير معروفة سيسألك تلقائيًا إذا بدك تضيفها.',
+      builder: (context) {
+        final cs = Theme.of(context).colorScheme;
+        final list = _store.settings.customHeaderFormats;
+        final typed = _text.trim();
+        final preview = _preview(_text);
+        final fieldError = preview.error;
+        final sample = preview.sample;
+
+        Widget mono(String text, {Color? color, double fontSize = 12.5}) =>
+            Text(
+              text,
+              textDirection: TextDirection.ltr,
+              style: TextStyle(
+                fontFamily: 'monospace',
+                fontSize: fontSize,
+                height: 1.6,
+                color: color ?? cs.onSurface,
+                fontWeight: FontWeight.w700,
+              ),
+            );
+
+        return [
+          // ====== إدخال القالب الجديد ======
+          TextField(
+            controller: _ctrl,
+            textDirection: TextDirection.ltr,
+            textInputAction: TextInputAction.done,
+            onChanged: (v) => setState(() => _text = v),
+            onSubmitted: (_) {
+              if (fieldError == null && typed.isNotEmpty) _add();
+            },
+            style: const TextStyle(
+              fontFamily: 'monospace',
+              fontSize: 13,
+              height: 1.6,
+            ),
+            decoration: _fieldDecoration(
+              context,
+              hint: '[{day}/{month}، {hour}:{minute}] {name}:',
+              icon: Icons.edit_note_rounded,
+              helper: fieldError,
+              suffix: Padding(
+                padding: const EdgeInsets.all(5),
+                child: IconButton.filled(
+                  tooltip: 'إضافة',
+                  onPressed: typed.isEmpty || fieldError != null ? null : _add,
+                  icon: const Icon(Icons.add_rounded),
+                ),
+              ),
+            ),
+          ),
+          if (sample != null) ...[
+            const SizedBox(height: 8),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+              decoration: BoxDecoration(
+                color: _kGreen.withValues(alpha: 0.10),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: _kGreen.withValues(alpha: 0.35)),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.check_circle_rounded, color: _kGreen, size: 17),
+                  const SizedBox(width: 8),
+                  Expanded(child: mono(sample, color: _kGreen)),
+                ],
+              ),
+            ),
+          ],
+          const SizedBox(height: 16),
+
+          // ====== الصيغة المضمّنة (للعلم فقط) ======
+          _SectionTitle(text: 'الصيغة المضمّنة'),
+          _Card(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+              child: Row(
+                children: [
+                  const Icon(Icons.lock_rounded, size: 18, color: _kSlate),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        mono(HeaderFormats.builtInTemplate),
+                        const SizedBox(height: 2),
+                        Text(
+                          'هيدر واتساب المنسوخ — متعرّفة تلقائيًا',
+                          style: TextStyle(
+                            fontSize: 11.5,
+                            color: cs.onSurfaceVariant,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
+
+          // ====== الصيغ المضافة ======
+          _SectionTitle(text: 'الصيغ المضافة (${list.length})'),
+          if (list.isEmpty)
+            const _EmptyHint(
+              icon: Icons.rule_rounded,
+              color: _kBlue,
+              text: 'لا توجد صيغ مضافة بعد — اكتب قالبًا بالأعلى ثم اضغط +',
+            )
+          else
+            _Card(
+              child: Column(
+                children: [
+                  for (var i = 0; i < list.length; i++) ...[
+                    if (i > 0) const _ListDivider(),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 4,
+                        vertical: 6,
+                      ),
+                      child: Row(
+                        children: [
+                          Expanded(child: mono(list[i])),
+                          _SmallIconButton(
+                            icon: Icons.edit_rounded,
+                            tooltip: 'تعديل',
+                            onPressed: () => _edit(list[i]),
+                          ),
+                          _SmallIconButton(
+                            icon: Icons.delete_outline_rounded,
+                            tooltip: 'حذف',
+                            color: cs.error,
+                            onPressed: () => _remove(list[i]),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          const SizedBox(height: 16),
+
+          // ====== كيف تكتب الصيغة ======
+          const _SectionTitle(text: 'كيف تكتب الصيغة؟'),
+          _Card(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _formulaRow('{day}', 'اليوم (رقم، ١-٣١)'),
+                _formulaRow('{month}', 'الشهر (رقم، ١-١٢)'),
+                _formulaRow('{year}', 'السنة (اختياري — رقمين أو ٤)'),
+                _formulaRow('{hour}', 'الساعة (رقم)'),
+                _formulaRow('{minute}', 'الدقيقة (رقم)'),
+                _formulaRow('{name}', 'اسم المرسل (حتى أول نقطتين :)'),
+                const _ListDivider(),
+                const Padding(
+                  padding: EdgeInsets.only(top: 6),
+                  child: Text(
+                    'باقي الحروف والرموز تُعتبر كما هي. مثال كامل:\n'
+                    '[{day}/{month}، {hour}:{minute}] {name}:',
+                    textDirection: TextDirection.ltr,
+                    style: TextStyle(
+                      fontFamily: 'monospace',
+                      fontSize: 12,
+                      height: 1.7,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 14),
+          const _TipText(
+            'الأرقام اللاتينية والعربية ٠-٩ متكافئتان، والمسافات وعلامات الاتجاه '
+            'يُتغاضى عنها، والفاصلة (, ،) متكافئتان. كما يسألك التطبيق تلقائيًا '
+            'إذا صادف صيغة قريبة غير معروفة.',
+          ),
+        ];
+      },
+    );
+  }
+
+  static Widget _formulaRow(String token, String meaning) => Padding(
+    padding: const EdgeInsets.symmetric(vertical: 4),
+    child: Row(
+      children: [
+        SizedBox(
+          width: 96,
+          child: Text(
+            token,
+            textDirection: TextDirection.ltr,
+            style: const TextStyle(
+              fontFamily: 'monospace',
+              fontSize: 12.5,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+        ),
+        Expanded(
+          child: Text(meaning, style: const TextStyle(fontSize: 12.5)),
+        ),
+      ],
+    ),
+  );
 }
 
 /// هيكل موحّد لصفحات الأقسام.

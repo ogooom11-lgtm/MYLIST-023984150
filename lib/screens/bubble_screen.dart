@@ -19,6 +19,7 @@ import '../widgets/destination_picker.dart';
 import '../widgets/operation_progress_bar.dart';
 import '../widgets/quick_action_defs.dart';
 import '../widgets/scroll_edge_buttons.dart';
+import '../widgets/header_format_sheet.dart';
 import 'add_edit_transaction_screen.dart';
 import 'operations_log_screen.dart';
 import 'settings_screen.dart';
@@ -122,6 +123,8 @@ class _BubbleScreenState extends State<BubbleScreen> {
   late List<String> _companyUserNames;
   late List<BubbleQuickActionConfig> _bubbleQuickActions;
   late List<String> _forbiddenWords;
+  late List<String> _allowedNameWords;
+  late List<String> _customHeaderFormats;
   late List<String> _forbiddenPhrases;
   late BubbleUiPrefs _prefs;
 
@@ -246,34 +249,16 @@ class _BubbleScreenState extends State<BubbleScreen> {
       texts.add(widget.rawText!.trim());
     }
 
-    if (texts.isEmpty) {
-      _segments = [
-        ParsedSegment(
-          header: '',
-          senderName: '',
-          timestamp: null,
-          lines: const [],
-        ),
-      ];
-    } else {
-      final parsed = texts.expand(_splitByHeader).toList();
-      // رتب المقاطع زمنيًا إن أمكن — ترتيب ثابت: الرسائل بنفس الوقت (أو بدون
-      // وقت مثل صفوف ملف Excel) تبقى بترتيبها الأصلي
-      final order = List<int>.generate(parsed.length, (i) => i)
-        ..sort((x, y) {
-          final ta = parsed[x].timestamp, tb = parsed[y].timestamp;
-          var c = 0;
-          if (ta == null && tb != null) {
-            c = 1;
-          } else if (ta != null && tb == null) {
-            c = -1;
-          } else if (ta != null && tb != null) {
-            c = ta.compareTo(tb);
-          }
-          return c != 0 ? c : x.compareTo(y);
-        });
-      _segments = [for (final i in order) parsed[i]];
-    }
+    _segments = texts.isEmpty
+        ? [
+            ParsedSegment(
+              header: '',
+              senderName: '',
+              timestamp: null,
+              lines: const [],
+            ),
+          ]
+        : _orderedSegments(texts);
 
     // التحليل يتم على دفعات بعد ظهور الشاشة حتى لا يتجمد التطبيق
     _analyzing = true;
@@ -284,9 +269,51 @@ class _BubbleScreenState extends State<BubbleScreen> {
         total: _segments.length,
       ),
     );
-    WidgetsBinding.instance.addPostFrameCallback((_) {
+
+    final rawForSuggest = texts.join('\n');
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) return;
+      // صيغ هيدر غير معروفة تشبه المعروفة؟ اعرضها للإضافة قبل التحليل
+      if (rawForSuggest.trim().isNotEmpty) {
+        final added = await showHeaderFormatSuggestIfAny(context, rawForSuggest);
+        if (!mounted) return;
+        if (added) {
+          // الإعدادات تغيّرت (أُضيفت صيغ): أعد التحميل وأعد التقسيم
+          _loadSettingsAndPrefs();
+          setState(() {
+            _segments = _orderedSegments(texts);
+            _setProgress(
+              OperationProgress(
+                label: 'جارٍ تحليل الرسائل...',
+                done: 0,
+                total: _segments.length,
+              ),
+            );
+          });
+        }
+      }
       if (mounted) _runInitialAnalysis();
     });
+  }
+
+  /// يقسم كل النصوص إلى مقاطع ويرتبها زمنيًا (ترتيب ثابت: الرسائل بلا وقت
+  /// أو بنفس الوقت تبقى بترتيبها الأصلي)
+  List<ParsedSegment> _orderedSegments(List<String> texts) {
+    final parsed = texts.expand(_splitByHeader).toList();
+    final order = List<int>.generate(parsed.length, (i) => i)
+      ..sort((x, y) {
+        final ta = parsed[x].timestamp, tb = parsed[y].timestamp;
+        var c = 0;
+        if (ta == null && tb != null) {
+          c = 1;
+        } else if (ta != null && tb == null) {
+          c = -1;
+        } else if (ta != null && tb != null) {
+          c = ta.compareTo(tb);
+        }
+        return c != 0 ? c : x.compareTo(y);
+      });
+    return [for (final i in order) parsed[i]];
   }
 
   @override
@@ -326,6 +353,8 @@ class _BubbleScreenState extends State<BubbleScreen> {
     _bubbleQuickActions = List.of(_settings.bubbleQuickActions);
     _forbiddenWords = List.of(_settings.forbiddenWords);
     _forbiddenPhrases = List.of(_settings.forbiddenPhrases);
+    _allowedNameWords = List.of(_settings.nameAllowedWords);
+    _customHeaderFormats = List.of(_settings.customHeaderFormats);
     _prefs = BubbleUiPrefs.fromSettings(_settings);
     _destinations = DestinationBook.fromSettings(_settings);
   }
@@ -339,6 +368,7 @@ class _BubbleScreenState extends State<BubbleScreen> {
       currencyWords: [..._currencyMap.keys, ..._currencyMap.values],
       forbiddenWords: _forbiddenWords,
       forbiddenPhrases: _forbiddenPhrases,
+      allowedWords: _allowedNameWords,
       amountKeywords: _amountKeywords,
       cancelKeywords: _cancelKeywords,
       editKeywords: _editKeywords,
@@ -353,7 +383,7 @@ class _BubbleScreenState extends State<BubbleScreen> {
     _rebuildNameConfig();
     _tokenCache.clear();
     _destDetected.clear();
-    for (var i = 0; i < _selections.length; i++) {
+    for (var i = 0; i < _selections.length && i < _segments.length; i++) {
       _computeForbiddenFor(_segments[i], _selections[i]);
     }
     _amountCandidatesCache.clear();
@@ -1011,7 +1041,10 @@ class _BubbleScreenState extends State<BubbleScreen> {
 
   // ====== تقسيم النص حسب هيدر واتساب أو فواصل صفوف الملفات ======
   List<ParsedSegment> _splitByHeader(String input) => [
-    for (final raw in SegmentSplitter.split(input))
+    for (final raw in SegmentSplitter.split(
+      input,
+      customFormats: _customHeaderFormats,
+    ))
       ParsedSegment(
         header: raw.header,
         senderName: raw.senderName,
@@ -2276,6 +2309,7 @@ class _BubbleScreenState extends State<BubbleScreen> {
       keys,
       start,
       forbiddenIdx: forbiddenIdx,
+      tokens: tokens,
     );
     if (startReason != null) {
       return (span: const <int>[], reason: 'لا يمكن بدء الاسم من $startReason');
@@ -2286,6 +2320,7 @@ class _BubbleScreenState extends State<BubbleScreen> {
       keys,
       start,
       forbiddenIdx: forbiddenIdx,
+      tokens: tokens,
       extraStop: extraStop,
       maxTokens: 100,
     );
@@ -2355,7 +2390,7 @@ class _BubbleScreenState extends State<BubbleScreen> {
     ).trim();
     double? wordValue;
     for (final e in settings.amountWordValues.entries) {
-      if (tt.normalizeText(e.key) == tt.normalizeText(word)) {
+      if (SettingsWords.sameWord(e.key, word)) {
         wordValue = e.value;
         break;
       }
@@ -2386,6 +2421,7 @@ class _BubbleScreenState extends State<BubbleScreen> {
       if (inList(WordListKind.lineIgnored)) 'تجاهل سطر',
       if (inList(WordListKind.cancelKeyword)) 'كلمة إلغاء',
       if (inList(WordListKind.editKeyword)) 'كلمة تعديل',
+      if (inList(WordListKind.allowedName)) 'مسموحة للاسم',
       if (wordValue != null) 'قيمة: ${_fmtAmount(wordValue)}',
     ];
 
@@ -2613,6 +2649,14 @@ class _BubbleScreenState extends State<BubbleScreen> {
                       remove: inList(WordListKind.editKeyword),
                     ),
                     tile(
+                      'allowedName',
+                      Icons.playlist_add_check_rounded,
+                      addOrRemove(WordListKind.allowedName),
+                      Colors.green,
+                      subtitle: 'لا تقطع الاسم وتنضم معه أثناء التحديد',
+                      remove: inList(WordListKind.allowedName),
+                    ),
+                    tile(
                       'wordValue',
                       Icons.calculate_rounded,
                       'تعيين قيمة رقمية لهذه الكلمة',
@@ -2677,6 +2721,9 @@ class _BubbleScreenState extends State<BubbleScreen> {
         break;
       case 'editKeyword':
         await toggle(WordListKind.editKeyword);
+        break;
+      case 'allowedName':
+        await toggle(WordListKind.allowedName);
         break;
       case 'currency':
         if (currencyOf != null) {

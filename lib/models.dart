@@ -383,6 +383,15 @@ class Settings extends HiveObject {
   @HiveField(15)
   Map<String, dynamic> destinationInfo;
 
+  /// كلمات ورموز مسموحة للاسم: لا تقطع الاسم وتنضم إليه أثناء تحديده.
+  @HiveField(16)
+  List<String> nameAllowedWords;
+
+  /// صيغ هيدر مخصّصة يكتبها المستخدم (قوالب مثل [{day}/{month}] {name}:)
+  /// للتعرف على بداية الرسائل أثناء التحليل.
+  @HiveField(17)
+  List<String> customHeaderFormats;
+
   Settings({
     required this.nameKeywords,
     required this.amountKeywords,
@@ -400,6 +409,8 @@ class Settings extends HiveObject {
     this.editKeywords = const ['تعديل'],
     this.destinationMap = const {},
     this.destinationInfo = const {},
+    this.nameAllowedWords = const [],
+    this.customHeaderFormats = const [],
   });
 }
 

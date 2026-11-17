@@ -18,6 +18,7 @@ enum WordListKind {
   editKeyword,
   readyName,
   companyUser,
+  allowedName,
 }
 
 extension WordListKindInfo on WordListKind {
@@ -43,6 +44,8 @@ extension WordListKindInfo on WordListKind {
         return 'الأسماء الجاهزة';
       case WordListKind.companyUser:
         return 'أسماء مستخدمي الشركة';
+      case WordListKind.allowedName:
+        return 'كلمات ورموز مسموحة للاسم';
     }
   }
 }
@@ -81,6 +84,8 @@ class SettingsWords {
         return s.bubbleReadyNames;
       case WordListKind.companyUser:
         return s.companyUserNames;
+      case WordListKind.allowedName:
+        return s.nameAllowedWords;
     }
   }
 
@@ -116,13 +121,27 @@ class SettingsWords {
       case WordListKind.companyUser:
         s.companyUserNames = v;
         break;
+      case WordListKind.allowedName:
+        s.nameAllowedWords = v;
+        break;
     }
   }
 
+  /// تطابق كلمة: بالمقارنة المطبَّعة إن وُجد مفتاح، وإلا بالمقارنة الحرفية
+  /// (للرموز التي لا مفتاح لها — normalizeText('/') فاضية مثلًا)
+  static bool sameWord(String a, String b) {
+    final ta = a.trim();
+    final tb = b.trim();
+    if (ta.isEmpty || tb.isEmpty) return false;
+    final ka = normalizeText(ta);
+    final kb = normalizeText(tb);
+    if (ka.isNotEmpty && kb.isNotEmpty) return ka == kb;
+    return ta == tb;
+  }
+
   static bool contains(Settings s, WordListKind k, String word) {
-    final key = normalizeText(word);
-    if (key.isEmpty) return false;
-    return listOf(s, k).any((e) => normalizeText(e) == key);
+    if (word.trim().isEmpty) return false;
+    return listOf(s, k).any((e) => sameWord(e, word));
   }
 
   /// يضيف الكلمة ويحفظ. يعيد false إذا كانت موجودة مسبقًا أو فارغة.
@@ -137,11 +156,10 @@ class SettingsWords {
   }
 
   static Future<bool> remove(WordListKind k, String word) async {
-    final key = normalizeText(word);
-    if (key.isEmpty) return false;
+    if (word.trim().isEmpty) return false;
     final s = load();
     final current = listOf(s, k);
-    final next = current.where((e) => normalizeText(e) != key).toList();
+    final next = current.where((e) => !sameWord(e, word)).toList();
     if (next.length == current.length) return false;
     _setList(s, k, next);
     await DatabaseService.saveSettings(s);
@@ -154,9 +172,8 @@ class SettingsWords {
 
   /// اسم العملة التي يتبع لها الاختصار (إن وجد)
   static String? currencyOfAlias(Settings s, String alias) {
-    final key = normalizeText(alias);
     for (final e in s.currencyMap.entries) {
-      if (normalizeText(e.key) == key) return e.value;
+      if (sameWord(e.key, alias)) return e.value;
     }
     return null;
   }
@@ -173,12 +190,11 @@ class SettingsWords {
   }
 
   static Future<bool> removeCurrencyAlias(String alias) async {
-    final key = normalizeText(alias);
     final s = load();
     final next = <String, String>{};
     var removed = false;
     s.currencyMap.forEach((k, v) {
-      if (normalizeText(k) == key) {
+      if (sameWord(k, alias)) {
         removed = true;
       } else {
         next[k] = v;

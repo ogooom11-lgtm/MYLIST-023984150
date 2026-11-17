@@ -359,6 +359,8 @@ class BackupService {
       'bubbleUiPrefs': s.bubbleUiPrefs,
       'destinationMap': s.destinationMap,
       'destinationInfo': s.destinationInfo,
+      'nameAllowedWords': s.nameAllowedWords,
+      'customHeaderFormats': s.customHeaderFormats,
     };
   }
 
@@ -388,6 +390,8 @@ class BackupService {
             )
           : <String, dynamic>{},
       destinationMap: _stringMap(map['destinationMap']),
+      nameAllowedWords: _stringList(map['nameAllowedWords']),
+      customHeaderFormats: _stringList(map['customHeaderFormats']),
       destinationInfo: map['destinationInfo'] is Map
           ? (map['destinationInfo'] as Map).map(
               (key, value) => MapEntry(

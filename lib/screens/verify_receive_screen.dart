@@ -24,6 +24,7 @@ import '../services/tx_history_service.dart';
 import '../utils/amount_format.dart';
 import '../utils/chunked_task.dart';
 import '../widgets/operation_progress_bar.dart';
+import '../widgets/header_format_sheet.dart';
 import '../widgets/scroll_edge_buttons.dart';
 
 class VerifyReceiveScreen extends StatefulWidget {
@@ -128,7 +129,22 @@ class _VerifyReceiveScreenState extends State<VerifyReceiveScreen> {
       customWordValues: _settings.amountWordValues,
     );
 
-    WidgetsBinding.instance.addPostFrameCallback((_) => _buildBubbles());
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) return;
+      // صيغ هيدر غير معروفة تشبه المعروفة؟ اعرضها للإضافة قبل التحليل
+      final added = await showHeaderFormatSuggestIfAny(
+        context,
+        widget.rawText,
+      );
+      if (added && mounted) {
+        _settings = DatabaseService.getSettings() ?? _settings;
+        final fresh = _splitByHeader(widget.rawText);
+        _segments
+          ..clear()
+          ..addAll(fresh);
+      }
+      if (mounted) _buildBubbles();
+    });
   }
 
   Future<void> _buildBubbles() async {
@@ -228,6 +244,7 @@ class _VerifyReceiveScreenState extends State<VerifyReceiveScreen> {
     for (final raw in SegmentSplitter.split(
       input,
       headerlessLabel: 'بدون هيدر',
+      customFormats: _settings.customHeaderFormats,
     ))
       _ParsedSegment(
         header: raw.header,
@@ -364,6 +381,7 @@ class _VerifyReceiveScreenState extends State<VerifyReceiveScreen> {
         currencyWords: _currencyWordsFromSettings(),
         forbiddenWords: _settings.forbiddenWords,
         forbiddenPhrases: _settings.forbiddenPhrases,
+        allowedWords: _settings.nameAllowedWords,
         amountKeywords: _amountKeywords,
         cancelKeywords: _settings.cancelKeywords,
         editKeywords: _settings.editKeywords,

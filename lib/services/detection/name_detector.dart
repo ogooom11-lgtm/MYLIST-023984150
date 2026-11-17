@@ -141,6 +141,12 @@ class NameDetectorConfig {
   final PhraseSet cancelKeywords;
   final PhraseSet editKeywords;
 
+  /// كلمات/رموز مسموحة للاسم: لا تقطع امتداد الاسم وتُضمّ إليه.
+  final PhraseSet allowed;
+
+  /// نفس القائمة بمقارنتها حرفيًا (للرموز التي لا مفتاح لها، مثل «/» و«-»)
+  final Set<String> _allowedRaw;
+
   final List<List<String>> _knownNames = [];
   final Map<String, List<int>> _knownIndex = {};
 
@@ -155,7 +161,13 @@ class NameDetectorConfig {
     List<String> amountKeywords = const [],
     List<String> cancelKeywords = const [],
     List<String> editKeywords = const [],
+    List<String> allowedWords = const [],
   }) : nameKeywords = PhraseSet(nameKeywords),
+       allowed = PhraseSet(allowedWords),
+       _allowedRaw = {
+         for (final w in allowedWords)
+           if (w.trim().isNotEmpty) w.trim(),
+       },
        ignored = PhraseSet(ignoredWords),
        lineIgnored = PhraseSet(lineIgnoredWords),
        currency = PhraseSet(currencyWords),
@@ -195,6 +207,29 @@ class NameDetectorConfig {
 
   bool isIgnoredKey(String key) => ignored.containsKey(key);
 
+  /// فهارس التوكنات المسموح ظهورها داخل الاسم (كلمات أو رموز)
+  Set<int> allowedMask(List<String> keys) {
+    final out = <int>{};
+    if (allowed.isEmpty) return out;
+    for (int i = 0; i < keys.length; i++) {
+      final len = allowed.matchAt(keys, i);
+      for (int j = 0; j < len; j++) {
+        out.add(i + j);
+      }
+    }
+    return out;
+  }
+
+  /// هل التوكن عند [i] مسموح داخل الاسم؟ (كلمة مسجلة أو رمز حرفي)
+  bool isAllowedTokenAt(List<String> keys, int i, [List<String>? tokens]) {
+    if (i < 0 || i >= keys.length) return false;
+    if (allowed.matchAt(keys, i) > 0) return true;
+    if (_allowedRaw.isNotEmpty && tokens != null && i < tokens.length) {
+      if (_allowedRaw.contains(tokens[i])) return true;
+    }
+    return false;
+  }
+
   /// فهارس التوكنات المغطاة بكلمة/جملة ممنوعة داخل سطر
   Set<int> forbiddenMask(List<String> keys) {
     final out = <int>{};
@@ -208,13 +243,34 @@ class NameDetectorConfig {
   }
 
   /// هل يبدأ عند [i] شيء يوقف امتداد الاسم؟ (يعيد السبب أو null)
-  String? stopReasonAt(List<String> keys, int i, {Set<int>? forbiddenIdx}) {
+  String? stopReasonAt(
+    List<String> keys,
+    int i, {
+    Set<int>? forbiddenIdx,
+    Set<int>? allowedIdx,
+    List<String>? tokens,
+  }) {
     if (i < 0 || i >= keys.length) return 'نهاية السطر';
     final k = keys[i];
-    if (k.isEmpty) return 'فراغ';
+    if (k.isEmpty) {
+      // رمز بلا مفتاح (مثل «/»): يدخل الاسم إذا كان مسجلًا كمسموح حرفيًا
+      if (tokens != null &&
+          i < tokens.length &&
+          _allowedRaw.contains(tokens[i])) {
+        return null;
+      }
+      return 'فراغ';
+    }
     if ((forbiddenIdx?.contains(i) ?? false) ||
         forbidden.matchAt(keys, i) > 0) {
       return 'كلمة ممنوعة';
+    }
+    final am = allowedIdx ?? (allowed.isEmpty ? null : allowedMask(keys));
+    if (am != null && am.contains(i)) return null;
+    if (tokens != null &&
+        i < tokens.length &&
+        _allowedRaw.contains(tokens[i])) {
+      return null;
     }
     if (tokenHasDigit(k)) return 'رقم';
     if (containsCurrencySymbol(k) || currency.matchAt(keys, i) > 0) {
@@ -236,13 +292,25 @@ class NameDetectorConfig {
     List<String> keys,
     int start, {
     Set<int>? forbiddenIdx,
+    Set<int>? allowedIdx,
+    List<String>? tokens,
     bool Function(int index)? extraStop,
     int maxTokens = 8,
   }) {
+    final ai = allowedIdx ?? (allowed.isEmpty ? null : allowedMask(keys));
     final span = <int>[];
     for (int i = start; i < keys.length; i++) {
       if (extraStop != null && extraStop(i)) break;
-      if (stopReasonAt(keys, i, forbiddenIdx: forbiddenIdx) != null) break;
+      if (stopReasonAt(
+            keys,
+            i,
+            forbiddenIdx: forbiddenIdx,
+            allowedIdx: ai,
+            tokens: tokens,
+          ) !=
+          null) {
+        break;
+      }
       if (isIgnoredKey(keys[i])) continue;
       span.add(i);
       if (span.length >= maxTokens) break;
@@ -259,6 +327,7 @@ class NameDetectorConfig {
     List<String> keys,
     int start, {
     Set<int>? forbiddenIdx,
+    List<String>? tokens,
   }) {
     var i = start;
     while (i < keys.length && isIgnoredKey(keys[i])) {
@@ -282,14 +351,21 @@ class NameDetectorConfig {
       keys,
       i + 1,
       forbiddenIdx: forbiddenIdx,
+      tokens: tokens,
       maxTokens: 7,
     );
     if (rest.isEmpty) return const [];
     return [i, ...rest];
   }
 
-  bool _canBeNameKey(List<String> keys, int i, Set<int> forbiddenIdx) =>
-      stopReasonAt(keys, i, forbiddenIdx: forbiddenIdx) == null &&
+  bool _canBeNameKey(
+    List<String> keys,
+    int i,
+    Set<int> forbiddenIdx, [
+    List<String>? tokens,
+  ]) =>
+      stopReasonAt(keys, i, forbiddenIdx: forbiddenIdx, tokens: tokens) ==
+          null &&
       !isIgnoredKey(keys[i]);
 }
 
@@ -325,6 +401,7 @@ class NameDetector {
     List<String> forbiddenPhrases = const [],
     List<String> amountKeywords = const [],
     List<String> cancelKeywords = const [],
+    List<String> allowedWords = const [],
   }) {
     final config = NameDetectorConfig(
       nameKeywords: nameKeywords,
@@ -336,6 +413,7 @@ class NameDetector {
       forbiddenPhrases: forbiddenPhrases,
       amountKeywords: amountKeywords,
       cancelKeywords: cancelKeywords,
+      allowedWords: allowedWords,
     );
     return detectTokens(
       tokenLines: lines.map(tokensFromLine).toList(),
@@ -503,12 +581,14 @@ class NameDetector {
           keys,
           i + len,
           forbiddenIdx: line.forbiddenIdx,
+          tokens: line.tokens,
         );
         if (span.isEmpty) {
           span = config.currencyLedSpan(
             keys,
             i + len,
             forbiddenIdx: line.forbiddenIdx,
+            tokens: line.tokens,
           );
         }
         if (span.isNotEmpty) {
@@ -532,12 +612,14 @@ class NameDetector {
           keys,
           start,
           forbiddenIdx: line.forbiddenIdx,
+          tokens: line.tokens,
         );
         if (span.isEmpty) {
           span = config.currencyLedSpan(
             keys,
             start,
             forbiddenIdx: line.forbiddenIdx,
+            tokens: line.tokens,
           );
         }
         addCandidate(li, span, 95, NameEvidence.previousLineKeyword);
@@ -556,11 +638,13 @@ class NameDetector {
           if (!ok) continue;
           final core = <int>[
             for (int j = 0; j < senderKeys.length; j++)
-              if (config._canBeNameKey(keys, s + j, line.forbiddenIdx)) s + j,
+              if (config._canBeNameKey(keys, s + j, line.forbiddenIdx,
+                      line.tokens))
+                s + j,
           ];
           if (core.isEmpty) break;
           // نمدّ المطابقة لتشمل كامل المقطع المتصل (مثل: أحمد → أحمد محمد العلي)
-          final runs = _nameRuns(keys, line.forbiddenIdx, config);
+          final runs = _nameRuns(keys, line.forbiddenIdx, config, line.tokens);
           final run = runs.firstWhere(
             (r) => r.contains(core.first),
             orElse: () => core,
@@ -812,13 +896,16 @@ class NameDetector {
   static List<List<int>> _nameRuns(
     List<String> keys,
     Set<int> forbiddenIdx,
-    NameDetectorConfig config,
-  ) {
+    NameDetectorConfig config, [
+    List<String>? tokens,
+  ]) {
     final runs = <List<int>>[];
     var current = <int>[];
     for (int i = 0; i < keys.length; i++) {
       if (config.isIgnoredKey(keys[i])) continue; // المهملة لا تقطع المقطع
-      if (config.stopReasonAt(keys, i, forbiddenIdx: forbiddenIdx) != null) {
+      if (config.stopReasonAt(keys, i,
+              forbiddenIdx: forbiddenIdx, tokens: tokens) !=
+          null) {
         if (current.isNotEmpty) runs.add(current);
         current = <int>[];
         continue;
