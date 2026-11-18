@@ -32,6 +32,17 @@ class RawSegment {
 class SegmentSplitter {
   SegmentSplitter._();
 
+  /// الرموز الخفية/الاتجاهية: RLM/LRM وعزل الاتجاه وBOM وzero-width وALM
+  /// — بتندس بنصوص واتساب (خصوصًا بالأسطر اللي فيها أرقام عربية) بدون
+  /// معنى للقارئ. بنشيلها قبل أي مطابقة لأنها بتمنع هيدر واتساب من المطابقة.
+  static final RegExp invisibleFormatChars = RegExp(
+    r'[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069\u200B-\u200D\u2060\uFEFF]',
+  );
+
+  /// يحذف الرموز الخفية/الاتجاهية من النص (وصفات واتساب المنسوخة تحتويها)
+  static String stripInvisible(String input) =>
+      input.replaceAll(invisibleFormatChars, '');
+
   /// هيدر واتساب عند نسخ الرسائل: [24/09, 10:30] الاسم:
   static final RegExp whatsappHeader = RegExp(
     r'\[\s*([0-9\u0660-\u0669]{1,2})\/[\u200F\u200E]?\s*([0-9\u0660-\u0669]{1,2})\s*[,،]\s*([0-9\u0660-\u0669]{1,2})\s*:\s*([0-9\u0660-\u0669]{2})\s*\]\s*([^:\n]+?)\s*:',
@@ -50,11 +61,13 @@ class SegmentSplitter {
   static String rowMarkerLine(String label) =>
       '$rowMarkerEdge ${label.trim()} $rowMarkerEdge';
 
-  static bool hasRowMarkers(String text) => rowMarker.hasMatch(text);
+  static bool hasRowMarkers(String text) =>
+      rowMarker.hasMatch(stripInvisible(text.replaceAll('\r', '')));
 
   /// عدد رسائل واتساب (الهيدرات) في النص
   static int countWhatsappHeaders(String text) =>
-      whatsappHeader.allMatches(text.replaceAll('\r', '')).length;
+      whatsappHeader.allMatches(stripInvisible(text.replaceAll('\r', '')))
+          .length;
 
   /// يقسم النص إلى مقاطع.
   /// [headerlessLabel]: عنوان المقطع عندما لا يوجد أي هيدر (يختلف بين الشاشات).
@@ -63,7 +76,7 @@ class SegmentSplitter {
     String headerlessLabel = '',
     DateTime? now,
   }) {
-    final text = input.replaceAll('\r', '');
+    final text = stripInvisible(input.replaceAll('\r', ''));
     final clock = now ?? DateTime.now();
     final markers = rowMarker.allMatches(text).toList();
     final headers = whatsappHeader.allMatches(text).toList();
