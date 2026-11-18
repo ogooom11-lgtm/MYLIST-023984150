@@ -354,6 +354,7 @@ class _VerifyReceiveScreenState extends State<VerifyReceiveScreen> {
   nd.NameDetectorConfig get _nameConfig =>
       _nameConfigCache ??= nd.NameDetectorConfig(
         nameKeywords: _nameKeywords,
+        nameAllowedWords: _settings.nameAllowedWords,
         knownNames: DatabaseService.transactionsBox.values
             .map((t) => t.beneficiary)
             .where((s) => s.trim().isNotEmpty)

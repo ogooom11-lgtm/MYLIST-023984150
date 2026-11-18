@@ -383,6 +383,10 @@ class Settings extends HiveObject {
   @HiveField(15)
   Map<String, dynamic> destinationInfo;
 
+  /// كلمات أو رموز مسموحة للاسم: لا تقطع الاسم وتنضم معه أثناء التحديد.
+  @HiveField(16)
+  List<String> nameAllowedWords;
+
   Settings({
     required this.nameKeywords,
     required this.amountKeywords,
@@ -400,6 +404,7 @@ class Settings extends HiveObject {
     this.editKeywords = const ['تعديل'],
     this.destinationMap = const {},
     this.destinationInfo = const {},
+    this.nameAllowedWords = const [],
   });
 }
 

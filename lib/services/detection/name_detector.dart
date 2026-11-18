@@ -133,6 +133,7 @@ class NameDetectResult {
 /// إعدادات الكاشف بعد تجهيزها مرة واحدة (مجموعات مطبّعة + فهرس الأسماء المعروفة)
 class NameDetectorConfig {
   final PhraseSet nameKeywords;
+  final PhraseSet nameAllowed;
   final PhraseSet ignored;
   final PhraseSet lineIgnored;
   final PhraseSet currency;
@@ -140,12 +141,18 @@ class NameDetectorConfig {
   final PhraseSet amountKeywords;
   final PhraseSet cancelKeywords;
   final PhraseSet editKeywords;
+  final Set<String> _nameAllowedRaw;
 
   final List<List<String>> _knownNames = [];
   final Map<String, List<int>> _knownIndex = {};
 
+  static final RegExp _letterOrDigitRe = RegExp(
+    r'[a-zA-Z0-9\u0621-\u064A\u0660-\u0669\u06F0-\u06F9]',
+  );
+
   NameDetectorConfig({
     required List<String> nameKeywords,
+    List<String> nameAllowedWords = const [],
     List<String> knownNames = const [],
     List<String> ignoredWords = const [],
     List<String> lineIgnoredWords = const [],
@@ -156,6 +163,12 @@ class NameDetectorConfig {
     List<String> cancelKeywords = const [],
     List<String> editKeywords = const [],
   }) : nameKeywords = PhraseSet(nameKeywords),
+       nameAllowed = PhraseSet(nameAllowedWords),
+       _nameAllowedRaw = {
+         for (final w in nameAllowedWords)
+           if (normalizeArabic(w).toLowerCase().trim().isNotEmpty)
+             normalizeArabic(w).toLowerCase().trim(),
+       },
        ignored = PhraseSet(ignoredWords),
        lineIgnored = PhraseSet(lineIgnoredWords),
        currency = PhraseSet(currencyWords),
@@ -195,6 +208,62 @@ class NameDetectorConfig {
 
   bool isIgnoredKey(String key) => ignored.containsKey(key);
 
+  /// هل التوكن عند [i] مسموح له بالانضمام للاسم (لا يقطعه وينضم معه)؟
+  bool isNameAllowedAt(List<String> keys, int i, {List<String>? tokens}) {
+    if (i < 0 || i >= keys.length) return false;
+    if (nameAllowed.matchAt(keys, i) > 0) return true;
+    final k = keys[i];
+    if (k.isNotEmpty && nameAllowed.containsKey(k)) return true;
+    if (_nameAllowedRaw.isEmpty) return false;
+    if (k.isNotEmpty && _nameAllowedRaw.contains(k)) return true;
+    if (tokens != null && i < tokens.length) {
+      final raw = normalizeArabic(tokens[i]).toLowerCase().trim();
+      if (raw.isNotEmpty && _nameAllowedRaw.contains(raw)) return true;
+      final stripped = normalizeArabic(
+        stripEdgePunct(tokens[i]),
+      ).toLowerCase().trim();
+      if (stripped.isNotEmpty && _nameAllowedRaw.contains(stripped)) return true;
+    }
+    return false;
+  }
+
+  /// فهارس التوكنات المسموحة للاسم داخل سطر (كلمات أو عبارات أو رموز مثل - و /)
+  Set<int> allowedMask(List<String> keys, {List<String>? tokens}) {
+    final out = <int>{};
+    if (nameAllowed.isEmpty && _nameAllowedRaw.isEmpty) return out;
+    if (nameAllowed.isNotEmpty) {
+      for (final hit in nameAllowed.findAll(keys)) {
+        for (int i = hit.start; i < hit.end; i++) {
+          out.add(i);
+        }
+      }
+    }
+    if (_nameAllowedRaw.isNotEmpty) {
+      for (int i = 0; i < keys.length; i++) {
+        if (out.contains(i)) continue;
+        final k = keys[i];
+        if (k.isNotEmpty && _nameAllowedRaw.contains(k)) {
+          out.add(i);
+          continue;
+        }
+        if (tokens != null && i < tokens.length) {
+          final raw = normalizeArabic(tokens[i]).toLowerCase().trim();
+          if (raw.isNotEmpty && _nameAllowedRaw.contains(raw)) {
+            out.add(i);
+            continue;
+          }
+          final stripped = normalizeArabic(
+            stripEdgePunct(tokens[i]),
+          ).toLowerCase().trim();
+          if (stripped.isNotEmpty && _nameAllowedRaw.contains(stripped)) {
+            out.add(i);
+          }
+        }
+      }
+    }
+    return out;
+  }
+
   /// فهارس التوكنات المغطاة بكلمة/جملة ممنوعة داخل سطر
   Set<int> forbiddenMask(List<String> keys) {
     final out = <int>{};
@@ -208,8 +277,18 @@ class NameDetectorConfig {
   }
 
   /// هل يبدأ عند [i] شيء يوقف امتداد الاسم؟ (يعيد السبب أو null)
-  String? stopReasonAt(List<String> keys, int i, {Set<int>? forbiddenIdx}) {
+  String? stopReasonAt(
+    List<String> keys,
+    int i, {
+    Set<int>? forbiddenIdx,
+    Set<int>? allowedIdx,
+    List<String>? tokens,
+  }) {
     if (i < 0 || i >= keys.length) return 'نهاية السطر';
+    if ((allowedIdx?.contains(i) ?? false) ||
+        isNameAllowedAt(keys, i, tokens: tokens)) {
+      return null;
+    }
     final k = keys[i];
     if (k.isEmpty) return 'فراغ';
     if ((forbiddenIdx?.contains(i) ?? false) ||
@@ -231,21 +310,43 @@ class NameDetectorConfig {
   }
 
   /// يجمع الاسم بدءًا من [start] حتى نهاية السطر أو أول كلمة إيقاف.
-  /// الكلمات المهملة تُتخطى ولا تُضاف.
+  /// الكلمات المهملة تُتخطى ولا تُضاف (إلا إذا كانت ضمن مسموحات الاسم).
   List<int> collectSpan(
     List<String> keys,
     int start, {
     Set<int>? forbiddenIdx,
+    Set<int>? allowedIdx,
+    List<String>? tokens,
     bool Function(int index)? extraStop,
     int maxTokens = 8,
   }) {
+    final effAllowed = allowedIdx ?? allowedMask(keys, tokens: tokens);
     final span = <int>[];
     for (int i = start; i < keys.length; i++) {
       if (extraStop != null && extraStop(i)) break;
-      if (stopReasonAt(keys, i, forbiddenIdx: forbiddenIdx) != null) break;
-      if (isIgnoredKey(keys[i])) continue;
+      final allowed = effAllowed.contains(i);
+      if (!allowed &&
+          stopReasonAt(
+                keys,
+                i,
+                forbiddenIdx: forbiddenIdx,
+                allowedIdx: effAllowed,
+                tokens: tokens,
+              ) !=
+              null) {
+        break;
+      }
+      if (!allowed && isIgnoredKey(keys[i])) continue;
       span.add(i);
       if (span.length >= maxTokens) break;
+    }
+    if (tokens != null) {
+      // نحذف الرموز البحتة في آخر الامتداد (مثل «أحمد - 500») بينما يبقى الرمز في الوسط («أحمد - محمد»)
+      while (span.isNotEmpty) {
+        final ti = span.last;
+        if (ti < tokens.length && _letterOrDigitRe.hasMatch(tokens[ti])) break;
+        span.removeLast();
+      }
     }
     return span;
   }
@@ -259,9 +360,14 @@ class NameDetectorConfig {
     List<String> keys,
     int start, {
     Set<int>? forbiddenIdx,
+    Set<int>? allowedIdx,
+    List<String>? tokens,
   }) {
+    final effAllowed = allowedIdx ?? allowedMask(keys, tokens: tokens);
     var i = start;
-    while (i < keys.length && isIgnoredKey(keys[i])) {
+    while (i < keys.length &&
+        !effAllowed.contains(i) &&
+        isIgnoredKey(keys[i])) {
       i++;
     }
     if (i >= keys.length) return const [];
@@ -282,24 +388,50 @@ class NameDetectorConfig {
       keys,
       i + 1,
       forbiddenIdx: forbiddenIdx,
+      allowedIdx: effAllowed,
+      tokens: tokens,
       maxTokens: 7,
     );
     if (rest.isEmpty) return const [];
     return [i, ...rest];
   }
 
-  bool _canBeNameKey(List<String> keys, int i, Set<int> forbiddenIdx) =>
-      stopReasonAt(keys, i, forbiddenIdx: forbiddenIdx) == null &&
-      !isIgnoredKey(keys[i]);
+  bool _canBeNameKey(
+    List<String> keys,
+    int i,
+    Set<int> forbiddenIdx, {
+    Set<int>? allowedIdx,
+    List<String>? tokens,
+  }) {
+    final allowed =
+        (allowedIdx?.contains(i) ?? false) ||
+        isNameAllowedAt(keys, i, tokens: tokens);
+    return stopReasonAt(
+          keys,
+          i,
+          forbiddenIdx: forbiddenIdx,
+          allowedIdx: allowedIdx,
+          tokens: tokens,
+        ) ==
+        null &&
+        (allowed || !isIgnoredKey(keys[i]));
+  }
 }
 
 class _LineInfo {
   final List<String> tokens;
   final List<String> keys;
   final Set<int> forbiddenIdx;
+  final Set<int> allowedIdx;
   final bool skipped;
 
-  _LineInfo(this.tokens, this.keys, this.forbiddenIdx, this.skipped);
+  _LineInfo(
+    this.tokens,
+    this.keys,
+    this.forbiddenIdx,
+    this.allowedIdx,
+    this.skipped,
+  );
 
   bool get isEmpty => keys.isEmpty;
 }
@@ -317,6 +449,7 @@ class NameDetector {
     required List<String> lines,
     required String senderName,
     required List<String> nameKeywords,
+    List<String> nameAllowedWords = const [],
     List<String> knownNames = const [],
     List<String> ignoredWords = const [],
     List<String> lineIgnoredWords = const [],
@@ -328,6 +461,7 @@ class NameDetector {
   }) {
     final config = NameDetectorConfig(
       nameKeywords: nameKeywords,
+      nameAllowedWords: nameAllowedWords,
       knownNames: knownNames,
       ignoredWords: ignoredWords,
       lineIgnoredWords: lineIgnoredWords,
@@ -355,11 +489,13 @@ class NameDetector {
     for (final toks in tokenLines) {
       final keys = config.keysOf(toks);
       final forbiddenIdx = config.forbiddenMask(keys);
+      final allowedIdx = config.allowedMask(keys, tokens: toks);
       lines.add(
         _LineInfo(
           toks,
           keys,
           forbiddenIdx,
+          allowedIdx,
           _shouldSkipLine(toks, keys, config),
         ),
       );
@@ -375,7 +511,9 @@ class NameDetector {
     // آخر كلمة مفيدة في السطر (تتخطى الكلمات المهملة)
     int lastMeaningful(_LineInfo line) {
       for (int i = line.keys.length - 1; i >= 0; i--) {
-        if (!config.isIgnoredKey(line.keys[i])) return i;
+        if (line.allowedIdx.contains(i) || !config.isIgnoredKey(line.keys[i])) {
+          return i;
+        }
       }
       return -1;
     }
@@ -393,6 +531,7 @@ class NameDetector {
       if (p < 0) return false;
       final last = lastMeaningful(lines[p]);
       if (last < 0) return false;
+      if (lines[p].allowedIdx.contains(last)) return false;
       return lines[p].forbiddenIdx.contains(last) ||
           config.forbidden.matchEndingAt(lines[p].keys, last) > 0;
     }
@@ -401,7 +540,9 @@ class NameDetector {
     bool startsAtLineStart(_LineInfo line, List<int> span) {
       if (span.isEmpty) return false;
       for (int i = 0; i < span.first; i++) {
-        if (!config.isIgnoredKey(line.keys[i])) return false;
+        if (line.allowedIdx.contains(i) || !config.isIgnoredKey(line.keys[i])) {
+          return false;
+        }
       }
       return true;
     }
@@ -410,8 +551,10 @@ class NameDetector {
     bool forbiddenBefore(_LineInfo line, List<int> span) {
       if (span.isEmpty) return false;
       for (int i = span.first - 1; i >= 0; i--) {
-        if (config.isIgnoredKey(line.keys[i])) continue;
-        return line.forbiddenIdx.contains(i);
+        if (!line.allowedIdx.contains(i) && config.isIgnoredKey(line.keys[i])) {
+          continue;
+        }
+        return !line.allowedIdx.contains(i) && line.forbiddenIdx.contains(i);
       }
       return false;
     }
@@ -503,12 +646,16 @@ class NameDetector {
           keys,
           i + len,
           forbiddenIdx: line.forbiddenIdx,
+          allowedIdx: line.allowedIdx,
+          tokens: line.tokens,
         );
         if (span.isEmpty) {
           span = config.currencyLedSpan(
             keys,
             i + len,
             forbiddenIdx: line.forbiddenIdx,
+            allowedIdx: line.allowedIdx,
+            tokens: line.tokens,
           );
         }
         if (span.isNotEmpty) {
@@ -525,19 +672,25 @@ class NameDetector {
       // ب) السطر السابق ينتهي بكلمة اسم → هذا السطر هو الاسم
       if (prevEndsWithKeyword(li)) {
         int start = 0;
-        while (start < keys.length && config.isIgnoredKey(keys[start])) {
+        while (start < keys.length &&
+            !line.allowedIdx.contains(start) &&
+            config.isIgnoredKey(keys[start])) {
           start++;
         }
         var span = config.collectSpan(
           keys,
           start,
           forbiddenIdx: line.forbiddenIdx,
+          allowedIdx: line.allowedIdx,
+          tokens: line.tokens,
         );
         if (span.isEmpty) {
           span = config.currencyLedSpan(
             keys,
             start,
             forbiddenIdx: line.forbiddenIdx,
+            allowedIdx: line.allowedIdx,
+            tokens: line.tokens,
           );
         }
         addCandidate(li, span, 95, NameEvidence.previousLineKeyword);
@@ -556,11 +709,24 @@ class NameDetector {
           if (!ok) continue;
           final core = <int>[
             for (int j = 0; j < senderKeys.length; j++)
-              if (config._canBeNameKey(keys, s + j, line.forbiddenIdx)) s + j,
+              if (config._canBeNameKey(
+                keys,
+                s + j,
+                line.forbiddenIdx,
+                allowedIdx: line.allowedIdx,
+                tokens: line.tokens,
+              ))
+                s + j,
           ];
           if (core.isEmpty) break;
           // نمدّ المطابقة لتشمل كامل المقطع المتصل (مثل: أحمد → أحمد محمد العلي)
-          final runs = _nameRuns(keys, line.forbiddenIdx, config);
+          final runs = _nameRuns(
+            keys,
+            line.forbiddenIdx,
+            config,
+            tokens: line.tokens,
+            allowedIdx: line.allowedIdx,
+          );
           final run = runs.firstWhere(
             (r) => r.contains(core.first),
             orElse: () => core,
@@ -571,7 +737,13 @@ class NameDetector {
       }
 
       // د) الأسماء المعروفة + جزء من اسم المرسل (على مستوى المقاطع المتصلة)
-      final runs = _nameRuns(keys, line.forbiddenIdx, config);
+      final runs = _nameRuns(
+        keys,
+        line.forbiddenIdx,
+        config,
+        tokens: line.tokens,
+        allowedIdx: line.allowedIdx,
+      );
       double bestRunScore = -1;
       NameEvidence? bestRunEvidence;
       List<int>? bestRunSpan;
@@ -616,12 +788,17 @@ class NameDetector {
         final run = runs.first;
         final meaningful = <int>[
           for (int x = 0; x < keys.length; x++)
-            if (!config.isIgnoredKey(keys[x])) x,
+            if (line.allowedIdx.contains(x) || !config.isIgnoredKey(keys[x])) x,
         ];
         final others = meaningful.where((x) => !run.contains(x)).toList();
         final onlyForbiddenBefore =
             others.isNotEmpty &&
-            others.every((x) => line.forbiddenIdx.contains(x) && x < run.first);
+            others.every(
+              (x) =>
+                  !line.allowedIdx.contains(x) &&
+                  line.forbiddenIdx.contains(x) &&
+                  x < run.first,
+            );
         // كلمة إلغاء/تعديل قبل الاسم (مثل «تعديل سامر خليل») لا تمنع اعتبار
         // بقية السطر اسمًا
         final actionIdx = <int>{
@@ -632,10 +809,14 @@ class NameDetector {
         final onlyActionBefore =
             others.isNotEmpty &&
             others.every((x) => actionIdx.contains(x) && x < run.first);
+        final letterCount = run
+            .where((x) => keys[x].length >= 2 && _letterRe.hasMatch(line.tokens[x]))
+            .length;
         final nameShaped =
             run.length >= 2 &&
-            run.length <= 5 &&
-            run.every((x) => keys[x].length >= 2);
+            run.length <= 6 &&
+            letterCount >= 2 &&
+            run.every((x) => line.allowedIdx.contains(x) || keys[x].length >= 2);
         if ((others.isEmpty || onlyActionBefore) && nameShaped) {
           addCandidate(li, run, 30, NameEvidence.lineShape);
         } else if (onlyForbiddenBefore && run.length <= 5) {
@@ -812,20 +993,53 @@ class NameDetector {
   static List<List<int>> _nameRuns(
     List<String> keys,
     Set<int> forbiddenIdx,
-    NameDetectorConfig config,
-  ) {
+    NameDetectorConfig config, {
+    List<String>? tokens,
+    Set<int>? allowedIdx,
+  }) {
+    final effAllowed = allowedIdx ?? config.allowedMask(keys, tokens: tokens);
     final runs = <List<int>>[];
     var current = <int>[];
+
+    void flush() {
+      if (tokens != null) {
+        while (current.isNotEmpty &&
+            !NameDetectorConfig._letterOrDigitRe.hasMatch(
+              tokens[current.first],
+            )) {
+          current.removeAt(0);
+        }
+        while (current.isNotEmpty &&
+            !NameDetectorConfig._letterOrDigitRe.hasMatch(
+              tokens[current.last],
+            )) {
+          current.removeLast();
+        }
+      }
+      if (current.isNotEmpty) runs.add(current);
+      current = <int>[];
+    }
+
     for (int i = 0; i < keys.length; i++) {
-      if (config.isIgnoredKey(keys[i])) continue; // المهملة لا تقطع المقطع
-      if (config.stopReasonAt(keys, i, forbiddenIdx: forbiddenIdx) != null) {
-        if (current.isNotEmpty) runs.add(current);
-        current = <int>[];
+      final allowed = effAllowed.contains(i);
+      if (!allowed && config.isIgnoredKey(keys[i])) {
+        continue; // المهملة لا تقطع المقطع
+      }
+      if (!allowed &&
+          config.stopReasonAt(
+                keys,
+                i,
+                forbiddenIdx: forbiddenIdx,
+                allowedIdx: effAllowed,
+                tokens: tokens,
+              ) !=
+              null) {
+        flush();
         continue;
       }
       current.add(i);
     }
-    if (current.isNotEmpty) runs.add(current);
+    flush();
     return runs.where((r) => r.length <= 8).toList();
   }
 

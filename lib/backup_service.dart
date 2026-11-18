@@ -359,6 +359,7 @@ class BackupService {
       'bubbleUiPrefs': s.bubbleUiPrefs,
       'destinationMap': s.destinationMap,
       'destinationInfo': s.destinationInfo,
+      'nameAllowedWords': s.nameAllowedWords,
     };
   }
 
@@ -398,6 +399,7 @@ class BackupService {
               ),
             )
           : <String, dynamic>{},
+      nameAllowedWords: _stringList(map['nameAllowedWords']),
     );
   }
 

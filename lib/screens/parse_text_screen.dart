@@ -7,6 +7,7 @@ import 'package:hive_flutter/hive_flutter.dart';
 
 import '../database_service.dart';
 import '../models.dart';
+import '../services/detection/text_tokens.dart' show stripInvisibleChars;
 import '../services/share_import/share_import_service.dart';
 import '../utils/chunked_task.dart';
 import '../widgets/import_sheets.dart';
@@ -480,7 +481,7 @@ class _ParseTextScreenState extends State<ParseTextScreen>
       s.replaceAll(RegExp(r'[\u064B-\u065F\u0670]'), '');
 
   String _normalizeForAccountMatch(String value) {
-    var s = _stripDiacritics(value).toLowerCase();
+    var s = _stripDiacritics(stripInvisibleChars(value)).toLowerCase();
     s = s.replaceAll('أ', 'ا').replaceAll('إ', 'ا').replaceAll('آ', 'ا');
     s = s.replaceAll('ى', 'ي').replaceAll('ئ', 'ي').replaceAll('ؤ', 'و');
     s = s.replaceAll('ة', 'ه');
@@ -1001,7 +1002,7 @@ class _ParseTextScreenState extends State<ParseTextScreen>
     );
   }
 
-  /// زرا «إضافة» و«تسليم» ثابتان أسفل الشاشة (مع شريط التقدم فوقهما)
+  /// أزرار «لصق وتحليل» و«إضافة» و«تسليم» ثابتة أسفل الشاشة (مع شريط التقدم فوقها)
   Widget _buildBottomBar(Brightness brightness) {
     final (a, b) = _palette(_selectedAccount);
     final dark = brightness == Brightness.dark;
@@ -1029,6 +1030,14 @@ class _ParseTextScreenState extends State<ParseTextScreen>
                 color: a,
                 padding: const EdgeInsets.only(bottom: 10),
               ),
+              _GradientActionButton(
+                label: 'لصق وتحليل الحساب تلقائيًا',
+                icon: Icons.content_paste_go_rounded,
+                colors: [a, Color.lerp(a, b, 0.5)!],
+                height: 48,
+                onPressed: _isBusy ? null : _paste,
+              ),
+              const SizedBox(height: 10),
               Row(
                 children: [
                   Expanded(
@@ -1036,6 +1045,7 @@ class _ParseTextScreenState extends State<ParseTextScreen>
                       label: 'إضافة',
                       icon: Icons.add_task_rounded,
                       colors: [a, Color.lerp(a, b, 0.35)!],
+                      height: 52,
                       onPressed: _isBusy ? null : _goBubble,
                     ),
                   ),
@@ -1045,6 +1055,7 @@ class _ParseTextScreenState extends State<ParseTextScreen>
                       label: 'تسليم',
                       icon: Icons.send_rounded,
                       colors: [Color.lerp(a, b, 0.65)!, b],
+                      height: 52,
                       onPressed: _isBusy ? null : _goVerifyReceive,
                     ),
                   ),
@@ -1266,21 +1277,6 @@ class _ParseTextScreenState extends State<ParseTextScreen>
                                       '✏️ ألصق هنا الرسائل أو النص المراد تحليله...',
                                   radius: 22,
                                 ),
-                              ),
-                              const SizedBox(height: 12),
-                              _GradientActionButton(
-                                label: 'لصق وتحليل الحساب تلقائيًا',
-                                icon: Icons.content_paste_go_rounded,
-                                colors: [
-                                  selectedColor,
-                                  Color.lerp(
-                                    selectedColor,
-                                    _palette(_selectedAccount).$2,
-                                    0.5,
-                                  )!,
-                                ],
-                                height: 50,
-                                onPressed: _isBusy ? null : _paste,
                               ),
                             ],
                           ),

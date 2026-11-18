@@ -111,6 +111,7 @@ class _BubbleScreenState extends State<BubbleScreen> {
   // الإعدادات
   late Settings _settings;
   late List<String> _nameKeywords;
+  late List<String> _nameAllowedWords;
   late List<String> _amountKeywords;
   late Map<String, String> _currencyMap; // مفتاح=اختصار/رمز، قيمة=اسم
   late List<String> _ignored;
@@ -314,6 +315,7 @@ class _BubbleScreenState extends State<BubbleScreen> {
   void _loadSettingsAndPrefs() {
     _settings = DatabaseService.getSettings() ?? _defaultSettings();
     _nameKeywords = List.of(_settings.nameKeywords);
+    _nameAllowedWords = List.of(_settings.nameAllowedWords);
     _amountKeywords = List.of(_settings.amountKeywords);
     _currencyMap = Map.of(_settings.currencyMap);
     _ignored = List.of(_settings.ignoredWords);
@@ -333,6 +335,7 @@ class _BubbleScreenState extends State<BubbleScreen> {
   void _rebuildNameConfig() {
     _nameConfig = nd.NameDetectorConfig(
       nameKeywords: _nameKeywords,
+      nameAllowedWords: _nameAllowedWords,
       knownNames: _knownBeneficiaryNames,
       ignoredWords: _ignored,
       lineIgnoredWords: _lineIgnored,
@@ -587,7 +590,10 @@ class _BubbleScreenState extends State<BubbleScreen> {
       if (p.line < 0 || p.line >= seg.lines.length) continue;
       final toks = _tokensFromLine(seg.lines[p.line]);
       if (p.index < 0 || p.index >= toks.length) continue;
-      if (!_isIgnoredWord(toks[p.index])) parts.add(toks[p.index]);
+      if (!_isIgnoredWord(toks[p.index]) ||
+          _isAllowedNameToken(toks[p.index])) {
+        parts.add(toks[p.index]);
+      }
     }
     return parts.join(' ');
   }
@@ -1193,6 +1199,15 @@ class _BubbleScreenState extends State<BubbleScreen> {
     return false;
   }
 
+  bool _isAllowedNameToken(String token) {
+    if (_nameAllowedWords.isEmpty) return false;
+    return _nameConfig.isNameAllowedAt(
+      [tt.matchKey(token)],
+      0,
+      tokens: [token],
+    );
+  }
+
   // ====== تجاهُل كلمات بالإعدادات ======
   Set<String> _currencyHintsFromSettings() {
     final out = <String>{};
@@ -1655,7 +1670,9 @@ class _BubbleScreenState extends State<BubbleScreen> {
     nameRes.tokensByLine.forEach((li, idxs) {
       final toks = _tokensFromLine(seg.lines[li]);
       for (final ti in idxs) {
-        if (ti >= 0 && ti < toks.length && !_isIgnoredWord(toks[ti])) {
+        if (ti >= 0 &&
+            ti < toks.length &&
+            (!_isIgnoredWord(toks[ti]) || _isAllowedNameToken(toks[ti]))) {
           sel.nameTokens.add(_TokPos(li, ti));
         }
       }
@@ -1808,11 +1825,15 @@ class _BubbleScreenState extends State<BubbleScreen> {
 
     final allKeys = <String>[];
     for (int li = 0; li < seg.lines.length; li++) {
-      final keys = _nameConfig.keysOf(_tokensFromLine(seg.lines[li]));
+      final toks = _tokensFromLine(seg.lines[li]);
+      final keys = _nameConfig.keysOf(toks);
+      final allowedIdx = _nameConfig.allowedMask(keys, tokens: toks);
       allKeys.addAll(keys);
       for (final hit in _forbiddenWordSet.findAll(keys, lineIndex: li)) {
         for (int ti = hit.start; ti < hit.end; ti++) {
-          sel.forbiddenTokens.add(_TokPos(li, ti));
+          if (!allowedIdx.contains(ti)) {
+            sel.forbiddenTokens.add(_TokPos(li, ti));
+          }
         }
       }
       for (final hit in _forbiddenPhraseSet.findAll(keys, lineIndex: li)) {
@@ -2026,8 +2047,11 @@ class _BubbleScreenState extends State<BubbleScreen> {
         ? tokensThisLine[tokenIndex]
         : '';
 
-    // التوكن الأحمر: مسموح فقط في مرحلة المبلغ
-    if (_isLockedToken(segIndex, lineIndex, tokenIndex)) {
+    // التوكن الأحمر: مسموح فقط في مرحلة المبلغ (إلا إذا كان مسموحًا للاسم)
+    if (_isLockedToken(segIndex, lineIndex, tokenIndex) &&
+        !((sel.stage == SelectionStage.name ||
+                sel.stage == SelectionStage.newName) &&
+            _isAllowedNameToken(tok))) {
       if (sel.stage != SelectionStage.amount) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -2047,10 +2071,11 @@ class _BubbleScreenState extends State<BubbleScreen> {
       return;
     }
 
-    // كلمات ignored لا تُستخدم كاسم
+    // كلمات ignored لا تُستخدم كاسم (إلا إذا كانت مسموحة للاسم)
     if ((sel.stage == SelectionStage.name ||
             sel.stage == SelectionStage.newName) &&
-        _isIgnoredWord(tok)) {
+        _isIgnoredWord(tok) &&
+        !_isAllowedNameToken(tok)) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text(
@@ -2076,9 +2101,14 @@ class _BubbleScreenState extends State<BubbleScreen> {
       case SelectionStage.name:
         final keys = _nameConfig.keysOf(tokensThisLine);
         final forbiddenIdx = _nameConfig.forbiddenMask(keys);
+        final allowedIdx = _nameConfig.allowedMask(
+          keys,
+          tokens: tokensThisLine,
+        );
 
-        // الكلمة/الجملة الممنوعة لا تدخل في الاسم أبدًا
+        // الكلمة/الجملة الممنوعة لا تدخل في الاسم (إلا إذا كانت مسموحة للاسم)
         if (forbiddenIdx.contains(tokenIndex) &&
+            !allowedIdx.contains(tokenIndex) &&
             !sel.nameTokens.contains(pos)) {
           _snack(
             sel.forbiddenPhraseTokens.contains(pos)
@@ -2118,7 +2148,8 @@ class _BubbleScreenState extends State<BubbleScreen> {
           setState(() {
             if (sel.nameTokens.contains(pos)) {
               sel.nameTokens.remove(pos);
-            } else if (!_isIgnoredWord(tok)) {
+            } else if (!_isIgnoredWord(tok) ||
+                allowedIdx.contains(tokenIndex)) {
               sel.nameTokens.add(pos);
             }
             _nameOverride.remove(segIndex);
@@ -2136,7 +2167,12 @@ class _BubbleScreenState extends State<BubbleScreen> {
         // التعديل: كلمات الاسم الجديد (مثل الاسم: يمتد تلقائيًا)
         final keys = _nameConfig.keysOf(tokensThisLine);
         final forbiddenIdx = _nameConfig.forbiddenMask(keys);
+        final allowedIdx = _nameConfig.allowedMask(
+          keys,
+          tokens: tokensThisLine,
+        );
         if (forbiddenIdx.contains(tokenIndex) &&
+            !allowedIdx.contains(tokenIndex) &&
             !sel.newNameTokens.contains(pos)) {
           _snack('«$tok» كلمة ممنوعة ولا يمكن أن تكون جزءًا من الاسم');
           return;
@@ -2165,7 +2201,8 @@ class _BubbleScreenState extends State<BubbleScreen> {
           });
         } else {
           setState(() {
-            if (!sel.newNameTokens.remove(pos) && !_isIgnoredWord(tok)) {
+            if (!sel.newNameTokens.remove(pos) &&
+                (!_isIgnoredWord(tok) || allowedIdx.contains(tokenIndex))) {
               sel.newNameTokens.add(pos);
             }
             _editNewNameOverride.remove(segIndex);
@@ -2246,10 +2283,12 @@ class _BubbleScreenState extends State<BubbleScreen> {
     SelectionStage stage = SelectionStage.name,
   }) {
     final sel = _selections[segIndex];
+    final allowedIdx = _nameConfig.allowedMask(keys, tokens: tokens);
     bool extraStop(int i) {
       final p = _TokPos(lineIndex, i);
-      return _occupiedRoleName(sel, p, stage) != null ||
-          _isLockedToken(segIndex, lineIndex, i) ||
+      if (_occupiedRoleName(sel, p, stage) != null) return true;
+      if (allowedIdx.contains(i)) return false;
+      return _isLockedToken(segIndex, lineIndex, i) ||
           sel.phoneLikeTokens.contains(p) ||
           tt.isPhoneLike(tokens[i]);
     }
@@ -2257,7 +2296,9 @@ class _BubbleScreenState extends State<BubbleScreen> {
     var start = tokenIndex;
     final kwLen = _nameConfig.nameKeywords.matchAt(keys, start);
     if (kwLen > 0) start += kwLen;
-    while (start < keys.length && _nameConfig.isIgnoredKey(keys[start])) {
+    while (start < keys.length &&
+        !allowedIdx.contains(start) &&
+        _nameConfig.isIgnoredKey(keys[start])) {
       start++;
     }
     if (start >= keys.length) {
@@ -2276,6 +2317,8 @@ class _BubbleScreenState extends State<BubbleScreen> {
       keys,
       start,
       forbiddenIdx: forbiddenIdx,
+      allowedIdx: allowedIdx,
+      tokens: tokens,
     );
     if (startReason != null) {
       return (span: const <int>[], reason: 'لا يمكن بدء الاسم من $startReason');
@@ -2286,6 +2329,8 @@ class _BubbleScreenState extends State<BubbleScreen> {
       keys,
       start,
       forbiddenIdx: forbiddenIdx,
+      allowedIdx: allowedIdx,
+      tokens: tokens,
       extraStop: extraStop,
       maxTokens: 100,
     );
@@ -2381,6 +2426,7 @@ class _BubbleScreenState extends State<BubbleScreen> {
         'ضمن جملة ممنوعة',
       if (currencyOf != null) 'عملة: $currencyOf',
       if (inList(WordListKind.nameKeyword)) 'كلمة اسم',
+      if (inList(WordListKind.nameAllowed)) 'مسموحة للاسم',
       if (inList(WordListKind.amountKeyword)) 'كلمة مبلغ',
       if (inList(WordListKind.ignored)) 'مهملة',
       if (inList(WordListKind.lineIgnored)) 'تجاهل سطر',
@@ -2566,6 +2612,17 @@ class _BubbleScreenState extends State<BubbleScreen> {
                       remove: inList(WordListKind.nameKeyword),
                     ),
                     tile(
+                      'nameAllowed',
+                      Icons.person_add_alt_1_rounded,
+                      inList(WordListKind.nameAllowed)
+                          ? 'إزالة من مسموحات الاسم'
+                          : 'سماح للاسم',
+                      Colors.teal,
+                      subtitle:
+                          'كلمة أو رمز لا يقطع الاسم وينضم معه أثناء التحديد',
+                      remove: inList(WordListKind.nameAllowed),
+                    ),
+                    tile(
                       'phrase',
                       Icons.gpp_bad_rounded,
                       'إضافة جملة ممنوعة تبدأ من هذه الكلمة',
@@ -2662,6 +2719,9 @@ class _BubbleScreenState extends State<BubbleScreen> {
         break;
       case 'nameKeyword':
         await toggle(WordListKind.nameKeyword);
+        break;
+      case 'nameAllowed':
+        await toggle(WordListKind.nameAllowed);
         break;
       case 'amountKeyword':
         await toggle(WordListKind.amountKeyword);
@@ -3279,7 +3339,9 @@ class _BubbleScreenState extends State<BubbleScreen> {
       for (final ti in idxs) {
         if (ti >= 0 && ti < toks.length) {
           final tok = toks[ti];
-          if (!_isIgnoredWord(tok)) parts.add(tok);
+          if (!_isIgnoredWord(tok) || _isAllowedNameToken(tok)) {
+            parts.add(tok);
+          }
         }
       }
     }

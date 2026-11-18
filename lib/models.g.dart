@@ -184,13 +184,16 @@ class SettingsAdapter extends TypeAdapter<Settings> {
               (key, value) => MapEntry(key.toString(), value),
             )
           : const <String, dynamic>{},
+      nameAllowedWords: fields[16] is List
+          ? (fields[16] as List).map((e) => e.toString()).toList()
+          : const <String>[],
     );
   }
 
   @override
   void write(BinaryWriter writer, Settings obj) {
     writer
-      ..writeByte(16)
+      ..writeByte(17)
       ..writeByte(0)
       ..write(obj.nameKeywords)
       ..writeByte(1)
@@ -222,7 +225,9 @@ class SettingsAdapter extends TypeAdapter<Settings> {
       ..writeByte(14)
       ..write(obj.destinationMap)
       ..writeByte(15)
-      ..write(obj.destinationInfo);
+      ..write(obj.destinationInfo)
+      ..writeByte(16)
+      ..write(obj.nameAllowedWords);
   }
 
   @override

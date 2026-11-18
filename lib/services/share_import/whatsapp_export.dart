@@ -19,7 +19,7 @@ class WhatsAppExportResult {
 }
 
 final RegExp _bidiRe = RegExp(
-  r'[\u200E\u200F\u202A-\u202E\u2066-\u2069\uFEFF]',
+  r'[\u00AD\u061C\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF]',
 );
 
 /// يطبّع سطر الهيدر للمطابقة (أرقام عربية → لاتينية، حذف علامات الاتجاه)
@@ -29,9 +29,11 @@ final RegExp _bidiRe = RegExp(
   final origin = <int>[];
   for (var i = 0; i < line.length; i++) {
     final c = line.codeUnitAt(i);
-    if ((c >= 0x200E && c <= 0x200F) ||
+    if (c == 0x00AD ||
+        c == 0x061C ||
+        (c >= 0x200B && c <= 0x200F) ||
         (c >= 0x202A && c <= 0x202E) ||
-        (c >= 0x2066 && c <= 0x2069) ||
+        (c >= 0x2060 && c <= 0x206F) ||
         c == 0xFEFF) {
       continue;
     }

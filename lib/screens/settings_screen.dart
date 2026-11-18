@@ -142,6 +142,7 @@ class _SettingsScreenState extends State<SettingsScreen>
         icon: Icons.auto_awesome_rounded,
         tiles: [
           wordTile(WordListKind.nameKeyword),
+          wordTile(WordListKind.nameAllowed),
           wordTile(WordListKind.amountKeyword),
           _HubTile(
             icon: Icons.calculate_rounded,
@@ -489,6 +490,7 @@ class _SettingsStore extends ChangeNotifier {
 
   static Settings _copyOf(Settings s) => Settings(
     nameKeywords: List<String>.from(s.nameKeywords),
+    nameAllowedWords: List<String>.from(s.nameAllowedWords),
     amountKeywords: List<String>.from(s.amountKeywords),
     currencyMap: Map<String, String>.from(s.currencyMap),
     ignoredWords: List<String>.from(s.ignoredWords),
@@ -994,6 +996,18 @@ const List<_WordSpec> _wordSpecs = [
     icon: Icons.person_search_rounded,
     color: _kBlue,
     keywords: 'اسم المستفيد المستلم',
+  ),
+  _WordSpec(
+    kind: WordListKind.nameAllowed,
+    title: 'سماح للاسم',
+    subtitle: 'كلمات أو رموز تبقى ضمن الاسم ولا تقطعه',
+    description:
+        'كلمات أو أرقام أو رموز (مثل - أو / أو بن أو شركة) يُسمح ببقائها متصلة بالاسم أثناء التحليل والتحديد بدل قطع الاسم عندها.',
+    hint: 'أضف كلمة أو رمزًا، مثل: - أو / أو بن',
+    icon: Icons.person_add_alt_1_rounded,
+    color: Colors.teal,
+    keywords: 'سماح اسم مسموح رمز رموز وسم',
+    presets: ['-', '/', 'بن', 'آل'],
   ),
   _WordSpec(
     kind: WordListKind.amountKeyword,

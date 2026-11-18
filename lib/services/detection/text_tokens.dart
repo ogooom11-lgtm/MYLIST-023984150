@@ -6,6 +6,10 @@
 // -------------------------------------------------------------
 
 final RegExp _diacriticsRe = RegExp(r'[\u064B-\u065F\u0670]');
+final RegExp _invisibleCharsRe = RegExp(
+  r'[\u00AD\u061C\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF]',
+);
+final RegExp _nbspRe = RegExp(r'[\u00A0\u2007\u202F]');
 final RegExp _disallowedCharsRe = RegExp(
   r'[^\u0600-\u06FFa-zA-Z0-9\$€£﷼₺٫\.,\-_\/\+]',
 );
@@ -14,13 +18,20 @@ final RegExp _spacesRe = RegExp(r'\s+');
 final RegExp _edgePunctRe = RegExp(
   r'^[\s\.,،؛؟:;\-_/+!\u0640]+|[\s\.,،؛؟:;\-_/+!\u0640]+$',
 );
-final RegExp _hasDigitRe = RegExp(r'[0-9\u0660-\u0669]');
-final RegExp _allDigitsRe = RegExp(r'^[0-9\u0660-\u0669]+$');
+final RegExp _hasDigitRe = RegExp(r'[0-9\u0660-\u0669\u06F0-\u06F9]');
+final RegExp _allDigitsRe = RegExp(r'^[0-9\u0660-\u0669\u06F0-\u06F9]+$');
+
+/// إزالة الرموز الخفية/المجهولة وعلامات الاتجاه (مثل \u200F) وتوحيد المسافات
+String stripInvisibleChars(String s) => s
+    .replaceAll('\r', '')
+    .replaceAll(_invisibleCharsRe, '')
+    .replaceAll(_nbspRe, ' ');
 
 String stripDiacritics(String s) => s.replaceAll(_diacriticsRe, '');
 
 /// تطبيع الحروف العربية المتشابهة (أ/إ/آ → ا ، ى/ئ → ي ، ؤ → و ، ة → ه)
 String normalizeArabic(String s) {
+  s = stripInvisibleChars(s);
   s = stripDiacritics(s);
   s = s.replaceAll('أ', 'ا').replaceAll('إ', 'ا').replaceAll('آ', 'ا');
   s = s.replaceAll('ى', 'ي').replaceAll('ئ', 'ي').replaceAll('ؤ', 'و');
@@ -30,7 +41,9 @@ String normalizeArabic(String s) {
 
 bool _isAsciiDigit(int code) => code >= 0x30 && code <= 0x39;
 bool _isArabicDigit(int code) => code >= 0x0660 && code <= 0x0669;
-bool _isDigitCode(int code) => _isAsciiDigit(code) || _isArabicDigit(code);
+bool _isPersianDigit(int code) => code >= 0x06F0 && code <= 0x06F9;
+bool _isDigitCode(int code) =>
+    _isAsciiDigit(code) || _isArabicDigit(code) || _isPersianDigit(code);
 
 /// هل الفاصل الواقع عند [i] (بين رقمين) فاصل تجميع يجب حذفه؟
 /// - الشرطة/الشرطة السفلية/التطويل وفاصل الآلاف العربي: تُحذف دائمًا.
@@ -77,8 +90,8 @@ String squashDigitSeparators(String w) {
 
 /// تنظيف توكن واحد كما يظهر في الفقاعات
 String cleanToken(String w) {
-  final trimmed = w.replaceAll(_disallowedCharsRe, '').trim();
-  return squashDigitSeparators(trimmed);
+  final cleaned = stripInvisibleChars(w).replaceAll(_disallowedCharsRe, '').trim();
+  return squashDigitSeparators(cleaned);
 }
 
 /// تقسيم سطر إلى توكنات (هذه الفهارس هي المرجع في كل الشاشة)
@@ -116,6 +129,8 @@ String digitsOnly(String s) {
       b.writeCharCode(c);
     } else if (_isArabicDigit(c)) {
       b.writeCharCode(0x30 + (c - 0x0660));
+    } else if (_isPersianDigit(c)) {
+      b.writeCharCode(0x30 + (c - 0x06F0));
     }
   }
   return b.toString();

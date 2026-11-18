@@ -139,14 +139,20 @@ class ReceiptExtractor {
     final noise = scanner.scan(lines);
 
     // 1) الاسم: الضجيج يُستبدل بفاصل رقمي حتى لا يدخل في الاسم ولا يغيّر الفهارس
+    // (باستثناء الكلمات/الرموز المسموحة للاسم من الإعدادات)
     final nameLines = [
       for (final ln in noise)
-        [
-          for (int i = 0; i < ln.tokens.length; i++)
-            (ln.isNoise(i) || ln.mergedContaining(i) != null)
-                ? '0'
-                : ln.tokens[i],
-        ],
+        () {
+          final keys = nameConfig.keysOf(ln.tokens);
+          final allowedIdx = nameConfig.allowedMask(keys, tokens: ln.tokens);
+          return [
+            for (int i = 0; i < ln.tokens.length; i++)
+              (!allowedIdx.contains(i) &&
+                      (ln.isNoise(i) || ln.mergedContaining(i) != null))
+                  ? '0'
+                  : ln.tokens[i],
+          ];
+        }(),
     ];
 
     final nameRes = nd.NameDetector.detectTokens(
@@ -271,14 +277,20 @@ class ReceiptExtractor {
   List<int> spanFrom(LineNoise line, int start) {
     if (start < 0 || start >= line.tokens.length) return const [];
     final keys = nameConfig.keysOf(line.tokens);
+    final allowedIdx = nameConfig.allowedMask(keys, tokens: line.tokens);
     final span = nameConfig.collectSpan(
       keys,
       start,
       forbiddenIdx: nameConfig.forbiddenMask(keys),
-      extraStop: (i) => line.isNoise(i) || line.mergedContaining(i) != null,
+      allowedIdx: allowedIdx,
+      tokens: line.tokens,
+      extraStop: (i) =>
+          !allowedIdx.contains(i) &&
+          (line.isNoise(i) || line.mergedContaining(i) != null),
     );
     if (span.isNotEmpty) return span;
-    if (!tt.tokenHasDigit(line.tokens[start]) && !line.isNoise(start)) {
+    if (allowedIdx.contains(start) ||
+        (!tt.tokenHasDigit(line.tokens[start]) && !line.isNoise(start))) {
       return [start];
     }
     return const [];

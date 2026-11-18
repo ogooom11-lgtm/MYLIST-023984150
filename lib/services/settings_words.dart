@@ -11,6 +11,7 @@ enum WordListKind {
   forbidden,
   forbiddenPhrase,
   nameKeyword,
+  nameAllowed,
   amountKeyword,
   ignored,
   lineIgnored,
@@ -29,6 +30,8 @@ extension WordListKindInfo on WordListKind {
         return 'الجمل الممنوعة';
       case WordListKind.nameKeyword:
         return 'كلمات الاسم';
+      case WordListKind.nameAllowed:
+        return 'كلمات ورموز مسموحة للاسم';
       case WordListKind.amountKeyword:
         return 'كلمات المبلغ';
       case WordListKind.ignored:
@@ -67,6 +70,8 @@ class SettingsWords {
         return s.forbiddenPhrases;
       case WordListKind.nameKeyword:
         return s.nameKeywords;
+      case WordListKind.nameAllowed:
+        return s.nameAllowedWords;
       case WordListKind.amountKeyword:
         return s.amountKeywords;
       case WordListKind.ignored:
@@ -95,6 +100,9 @@ class SettingsWords {
       case WordListKind.nameKeyword:
         s.nameKeywords = v;
         break;
+      case WordListKind.nameAllowed:
+        s.nameAllowedWords = v;
+        break;
       case WordListKind.amountKeyword:
         s.amountKeywords = v;
         break;
@@ -119,10 +127,18 @@ class SettingsWords {
     }
   }
 
+  static String _entryKey(WordListKind k, String word) {
+    if (k == WordListKind.nameAllowed) {
+      // مسموحات الاسم قد تكون رموزًا مثل «-» أو «/»، لذا لا نحذف علامات الترقيم
+      return normalizeArabic(word).toLowerCase().trim();
+    }
+    return normalizeText(word);
+  }
+
   static bool contains(Settings s, WordListKind k, String word) {
-    final key = normalizeText(word);
+    final key = _entryKey(k, word);
     if (key.isEmpty) return false;
-    return listOf(s, k).any((e) => normalizeText(e) == key);
+    return listOf(s, k).any((e) => _entryKey(k, e) == key);
   }
 
   /// يضيف الكلمة ويحفظ. يعيد false إذا كانت موجودة مسبقًا أو فارغة.
@@ -137,11 +153,11 @@ class SettingsWords {
   }
 
   static Future<bool> remove(WordListKind k, String word) async {
-    final key = normalizeText(word);
+    final key = _entryKey(k, word);
     if (key.isEmpty) return false;
     final s = load();
     final current = listOf(s, k);
-    final next = current.where((e) => normalizeText(e) != key).toList();
+    final next = current.where((e) => _entryKey(k, e) != key).toList();
     if (next.length == current.length) return false;
     _setList(s, k, next);
     await DatabaseService.saveSettings(s);

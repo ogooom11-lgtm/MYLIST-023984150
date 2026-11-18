@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:floating_notes/floating_notes.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import '../database_service.dart';
@@ -36,10 +37,13 @@ class _HomeScreenState extends State<HomeScreen> {
   final TextEditingController _searchCtrl = TextEditingController();
   final FocusNode _searchFocus = FocusNode();
 
+  static const int _searchPageSize = 20;
+
   Timer? _debounce;
   String _liveQuery = '';
   String _query = '';
   bool _searchFocused = false;
+  int _visibleSearchLimit = _searchPageSize;
 
   _QuickStatusFilter _quickFilter = _QuickStatusFilter.all;
   bool _todayOnly = false;
@@ -50,6 +54,12 @@ class _HomeScreenState extends State<HomeScreen> {
   final Map<dynamic, String> _searchBlobCache = {};
   final Map<dynamic, int> _searchStampCache = {};
 
+  int _dataRevision = 0;
+  int? _cachedResultsKey;
+  List<_RankedTx> _cachedSearchResults = const [];
+  late final ValueListenable<Box<TransactionModel>> _txListenable;
+  late final ValueListenable<Box<Account>> _accountsListenable;
+
   // فقاعة الملاحظات العائمة
   bool _notesShowing = false;
   int _notesCount = 0;
@@ -57,9 +67,19 @@ class _HomeScreenState extends State<HomeScreen> {
   StreamSubscription<String>? _notesSub;
   AppLifecycleListener? _notesLifecycle;
 
+  void _bumpDataRevision() {
+    _dataRevision++;
+    _cachedResultsKey = null;
+  }
+
   @override
   void initState() {
     super.initState();
+
+    _txListenable = DatabaseService.transactionsBox.listenable();
+    _accountsListenable = DatabaseService.accountsBox.listenable();
+    _txListenable.addListener(_bumpDataRevision);
+    _accountsListenable.addListener(_bumpDataRevision);
 
     if (FloatingNotes.isSupported) {
       _notesSub = FloatingNotes.changes.listen((_) => _refreshNotesState());
@@ -68,13 +88,25 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     _searchCtrl.addListener(() {
-      _liveQuery = _searchCtrl.text.trim();
+      final next = _searchCtrl.text.trim();
+      _liveQuery = next;
       _debounce?.cancel();
-      _debounce = Timer(const Duration(milliseconds: 220), () {
-        if (!mounted) return;
-        setState(() => _query = _liveQuery);
+      if (next.isEmpty) {
+        if (_query.isNotEmpty && mounted) {
+          setState(() {
+            _query = '';
+            _visibleSearchLimit = _searchPageSize;
+          });
+        }
+        return;
+      }
+      _debounce = Timer(const Duration(milliseconds: 250), () {
+        if (!mounted || _query == _liveQuery) return;
+        setState(() {
+          _query = _liveQuery;
+          _visibleSearchLimit = _searchPageSize;
+        });
       });
-      if (mounted) setState(() {});
     });
 
     _searchFocus.addListener(() {
@@ -85,6 +117,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   void dispose() {
+    _txListenable.removeListener(_bumpDataRevision);
+    _accountsListenable.removeListener(_bumpDataRevision);
     _debounce?.cancel();
     _searchCtrl.dispose();
     _searchFocus.dispose();
@@ -195,6 +229,7 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() {
       _liveQuery = '';
       _query = '';
+      _visibleSearchLimit = _searchPageSize;
       _quickFilter = _QuickStatusFilter.all;
       _todayOnly = false;
       _selectedAccountId = null;
@@ -281,12 +316,13 @@ class _HomeScreenState extends State<HomeScreen> {
     return _accentPalette[mixed.abs() % _accentPalette.length];
   }
 
+  static final RegExp _arabicDiacriticsRe = RegExp(
+    r'[\u0610-\u061A\u064B-\u065F\u0670\u06D6-\u06ED]',
+  );
+
   String _normalizeText(String text) {
     if (text.isEmpty) return '';
-    var t = text.replaceAll(
-      RegExp(r'[\u0610-\u061A\u064B-\u065F\u0670\u06D6-\u06ED]'),
-      '',
-    );
+    final t = text.replaceAll(_arabicDiacriticsRe, '');
     final buffer = StringBuffer();
     for (var i = 0; i < t.length; i++) {
       final ch = t[i];
@@ -403,10 +439,12 @@ class _HomeScreenState extends State<HomeScreen> {
     return m;
   }
 
-  bool _matchesFocus(TransactionModel t) {
+  bool _matchesFocus(TransactionModel t) =>
+      _matchesFocusWithNow(t, DateTime.now());
+
+  bool _matchesFocusWithNow(TransactionModel t, DateTime now) {
     final focus = _focus;
     if (focus == null) return true;
-    final now = DateTime.now();
     switch (focus) {
       case _HomeFocus.addedToday:
         return _isSameDay(t.date, now);
@@ -468,6 +506,7 @@ class _HomeScreenState extends State<HomeScreen> {
       _focus = f;
       _quickFilter = _QuickStatusFilter.all;
       _todayOnly = false;
+      _visibleSearchLimit = _searchPageSize;
     });
   }
 
@@ -672,27 +711,29 @@ class _HomeScreenState extends State<HomeScreen> {
 
   int _scoreTransaction({
     required TransactionModel t,
-    required String accountName,
-    required String blob,
+    required String normAccountName,
+    required String? blob,
     required _ParsedSmartQuery parsed,
+    required bool isToday,
   }) {
     int score = 0;
-    final name = _normalizeText(t.beneficiary);
-    final acc = _normalizeText(accountName);
-    final curr1 = _normalizeText(t.currency);
-    final curr2 = _normalizeText(_secondCurrencyOf(t));
+    if (parsed.terms.isNotEmpty) {
+      final name = _normalizeText(t.beneficiary);
+      final curr1 = _normalizeText(t.currency);
+      final curr2 = _normalizeText(_secondCurrencyOf(t));
 
-    for (final term in parsed.terms) {
-      if (name == term) {
-        score += 30;
-      } else if (name.contains(term)) {
-        score += 18;
-      } else if (acc.contains(term)) {
-        score += 14;
-      } else if (curr1.contains(term) || curr2.contains(term)) {
-        score += 12;
-      } else if (blob.contains(term)) {
-        score += 8;
+      for (final term in parsed.terms) {
+        if (name == term) {
+          score += 30;
+        } else if (name.contains(term)) {
+          score += 18;
+        } else if (normAccountName.contains(term)) {
+          score += 14;
+        } else if (curr1.contains(term) || curr2.contains(term)) {
+          score += 12;
+        } else if (blob != null && blob.contains(term)) {
+          score += 8;
+        }
       }
     }
 
@@ -702,110 +743,137 @@ class _HomeScreenState extends State<HomeScreen> {
     if (parsed.date != null) score += 10;
     if (parsed.amount != null) score += 16;
 
-    if (_isTodayTx(t)) score += 2;
+    if (isToday) score += 2;
     return score;
   }
 
-  bool _matchesParsedQuery({
-    required TransactionModel t,
-    required String accountName,
-    required String blob,
-    required _ParsedSmartQuery parsed,
-  }) {
-    if (_selectedAccountId != null && t.accountId != _selectedAccountId) {
-      return false;
-    }
-
-    if (!_matchesQuickFilter(t)) return false;
-
-    if (_todayOnly && !_isTodayTx(t)) return false;
-
-    if (!_matchesFocus(t)) return false;
-
-    if (parsed.status != null && !_matchesStatusText(t, parsed.status!)) {
-      return false;
-    }
-
-    if (parsed.currency != null) {
-      final currNeed = _normalizeText(parsed.currency!);
-      final matchesCurrency =
-          _normalizeText(t.currency).contains(currNeed) ||
-          _normalizeText(_secondCurrencyOf(t)).contains(currNeed);
-      if (!matchesCurrency) return false;
-    }
-
-    if (parsed.account != null) {
-      if (!_normalizeText(
-        accountName,
-      ).contains(_normalizeText(parsed.account!))) {
-        return false;
-      }
-    }
-
-    if (parsed.date != null) {
-      final d = parsed.date!;
-      final same =
-          _isSameDay(t.date, d) ||
-          (t.receivedAt != null && _isSameDay(t.receivedAt!, d)) ||
-          (t.cancelledAt != null && _isSameDay(t.cancelledAt!, d));
-      if (!same) return false;
-    }
-
-    if (parsed.amount != null) {
-      final n = parsed.amount!;
-      final matchAmount =
-          (t.amount - n).abs() < 0.0001 ||
-          ((_hasSecondAmount(t)) && ((t.secondAmount! - n).abs() < 0.0001)) ||
-          ((t.amount + (t.secondAmount ?? 0) - n).abs() < 0.0001);
-      if (!matchAmount) return false;
-    }
-
-    for (final term in parsed.terms) {
-      if (!blob.contains(term)) return false;
-    }
-
-    return true;
-  }
-
   List<_RankedTx> _buildSearchResults(
-    List<TransactionModel> allTx,
+    Iterable<TransactionModel> allTx,
     Map<int, Account> accountsById,
   ) {
+    final now = DateTime.now();
+    final cacheKey = Object.hash(
+      _dataRevision,
+      _query,
+      _quickFilter,
+      _todayOnly,
+      _selectedAccountId,
+      _focus,
+      now.year,
+      now.month,
+      now.day,
+    );
+    if (_cachedResultsKey == cacheKey) {
+      return _cachedSearchResults;
+    }
+
     final parsed = _parseSmartQuery(_query);
+    final hasTerms = parsed.terms.isNotEmpty;
+    final currNeed = parsed.currency == null
+        ? null
+        : _normalizeText(parsed.currency!);
+    final accNeed = parsed.account == null
+        ? null
+        : _normalizeText(parsed.account!);
+    final normAccountsById = <int, String>{
+      for (final e in accountsById.entries) e.key: _normalizeText(e.value.name),
+    };
+    const fallbackAccountName = 'حساب غير معروف';
+    const fallbackNormAccount = 'حساب غير معروف';
+
     final hits = <_RankedTx>[];
 
     for (final t in allTx) {
-      final acc = accountsById[t.accountId];
-      final accountName = acc?.name ?? "حساب غير معروف";
-      final blob = _buildSearchBlob(t, accountName);
-
-      if (!_matchesParsedQuery(
-        t: t,
-        accountName: accountName,
-        blob: blob,
-        parsed: parsed,
-      )) {
+      if (_selectedAccountId != null && t.accountId != _selectedAccountId) {
         continue;
+      }
+
+      if (!_matchesQuickFilter(t)) continue;
+
+      final moment = _displayMomentOf(t);
+      final isToday = _isSameDay(moment, now);
+      if (_todayOnly && !isToday) continue;
+
+      if (!_matchesFocusWithNow(t, now)) continue;
+
+      if (parsed.status != null && !_matchesStatusText(t, parsed.status!)) {
+        continue;
+      }
+
+      if (currNeed != null) {
+        final matchesCurrency =
+            _normalizeText(t.currency).contains(currNeed) ||
+            _normalizeText(_secondCurrencyOf(t)).contains(currNeed);
+        if (!matchesCurrency) continue;
+      }
+
+      final acc = accountsById[t.accountId];
+      final accountName = acc?.name ?? fallbackAccountName;
+      final normAccountName =
+          normAccountsById[t.accountId] ?? fallbackNormAccount;
+
+      if (accNeed != null && !normAccountName.contains(accNeed)) {
+        continue;
+      }
+
+      if (parsed.date != null) {
+        final d = parsed.date!;
+        final same =
+            _isSameDay(t.date, d) ||
+            (t.receivedAt != null && _isSameDay(t.receivedAt!, d)) ||
+            (t.cancelledAt != null && _isSameDay(t.cancelledAt!, d));
+        if (!same) continue;
+      }
+
+      if (parsed.amount != null) {
+        final n = parsed.amount!;
+        final matchAmount =
+            (t.amount - n).abs() < 0.0001 ||
+            (_hasSecondAmount(t) && (t.secondAmount! - n).abs() < 0.0001) ||
+            ((t.amount + (t.secondAmount ?? 0) - n).abs() < 0.0001);
+        if (!matchAmount) continue;
+      }
+
+      String? blob;
+      if (hasTerms) {
+        blob = _buildSearchBlob(t, accountName);
+        var allTermsMatch = true;
+        for (final term in parsed.terms) {
+          if (!blob.contains(term)) {
+            allTermsMatch = false;
+            break;
+          }
+        }
+        if (!allTermsMatch) continue;
       }
 
       final score = _scoreTransaction(
         t: t,
-        accountName: accountName,
+        normAccountName: normAccountName,
         blob: blob,
         parsed: parsed,
+        isToday: isToday,
       );
 
       hits.add(
-        _RankedTx(tx: t, account: acc, accountName: accountName, score: score),
+        _RankedTx(
+          tx: t,
+          account: acc,
+          accountName: accountName,
+          score: score,
+          moment: moment,
+        ),
       );
     }
 
     hits.sort((a, b) {
       final byScore = b.score.compareTo(a.score);
       if (byScore != 0) return byScore;
-      return _displayMomentOf(b.tx).compareTo(_displayMomentOf(a.tx));
+      return b.moment.compareTo(a.moment);
     });
 
+    _cachedResultsKey = cacheKey;
+    _cachedSearchResults = hits;
     return hits;
   }
 
@@ -976,6 +1044,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                   _todayOnly = false;
                                   _selectedAccountId = null;
                                   _focus = null;
+                                  _visibleSearchLimit = _searchPageSize;
                                 });
                                 Navigator.pop(ctx);
                               },
@@ -991,6 +1060,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                   _quickFilter = tmpStatus;
                                   _todayOnly = tmpToday;
                                   _selectedAccountId = tmpAccountId;
+                                  _visibleSearchLimit = _searchPageSize;
                                 });
                                 Navigator.pop(ctx);
                               },
@@ -1154,7 +1224,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final pageBg = _pageBg(context);
 
     return ValueListenableBuilder(
-      valueListenable: DatabaseService.accountsBox.listenable(),
+      valueListenable: _accountsListenable,
       builder: (context, Box<Account> accountsBox, _) {
         final accounts = accountsBox.values.toList()
           ..sort((a, b) => a.name.compareTo(b.name));
@@ -1168,12 +1238,17 @@ class _HomeScreenState extends State<HomeScreen> {
         final accountsById = <int, Account>{for (final a in accounts) a.id: a};
 
         return ValueListenableBuilder(
-          valueListenable: DatabaseService.transactionsBox.listenable(),
+          valueListenable: _txListenable,
           builder: (context, Box<TransactionModel> txBox, _) {
-            final allTx = txBox.values.toList();
+            final allTx = txBox.values;
             final searchResults = _hasActiveSearch
                 ? _buildSearchResults(allTx, accountsById)
-                : <_RankedTx>[];
+                : const <_RankedTx>[];
+            final visibleSearchCount = searchResults.isEmpty
+                ? 0
+                : math.min(_visibleSearchLimit, searchResults.length);
+            final remainingSearchCount =
+                searchResults.length - visibleSearchCount;
 
             // ملخص اليوم + إحصائيات كل حساب (نفس منطق صفحة الإحصائيات:
             // الإضافة بتاريخ الإضافة، والإلغاء بتاريخ الإلغاء)
@@ -1487,9 +1562,9 @@ class _HomeScreenState extends State<HomeScreen> {
                             ),
                           ),
                         )
-                      else
+                      else ...[
                         SliverList.builder(
-                          itemCount: searchResults.length,
+                          itemCount: visibleSearchCount,
                           itemBuilder: (context, index) {
                             final hit = searchResults[index];
                             final t = hit.tx;
@@ -1497,84 +1572,113 @@ class _HomeScreenState extends State<HomeScreen> {
                             final accountName = hit.accountName;
                             final accent = _accountAccent(t.accountId);
 
-                            return _AnimatedEntrance(
-                              index: index,
-                              child: _SearchTxCard(
-                                tx: t,
-                                accountName: accountName,
-                                accent: accent,
-                                statusText: _movementLabel(t),
-                                statusColor: _movementColor(t),
-                                firstAmountText:
-                                    "${_formatAmount(t.amount)} ${t.currency}",
-                                secondAmountText: _hasSecondAmount(t)
-                                    ? "${_formatAmount(t.secondAmount!)} ${_secondCurrencyOf(t)}"
-                                    : null,
-                                dateText: _formatDay(_displayMomentOf(t)),
-                                timeText: _formatTime(_displayMomentOf(t)),
-                                dateLabel: _displayMomentLabel(t),
-                                onTapDetails: () {
-                                  _showTxDetailsSheet(
-                                    context,
-                                    t,
-                                    accountName,
-                                    accent,
-                                  );
-                                },
-                                onEdit: () {
-                                  Navigator.push(
-                                    context,
-                                    MaterialPageRoute(
-                                      builder: (_) => AddEditTransactionScreen(
-                                        account:
-                                            acc ??
-                                            Account(
-                                              id: t.accountId,
-                                              name: accountName,
-                                              type:
-                                                  t.companyMovementType != null
-                                                  ? AccountType.company
-                                                  : AccountType.office,
-                                            ),
-                                        existing: t,
-                                      ),
+                            return _SearchTxCard(
+                              tx: t,
+                              accountName: accountName,
+                              accent: accent,
+                              statusText: _movementLabel(t),
+                              statusColor: _movementColor(t),
+                              firstAmountText:
+                                  "${_formatAmount(t.amount)} ${t.currency}",
+                              secondAmountText: _hasSecondAmount(t)
+                                  ? "${_formatAmount(t.secondAmount!)} ${_secondCurrencyOf(t)}"
+                                  : null,
+                              dateText: _formatDay(hit.moment),
+                              timeText: _formatTime(hit.moment),
+                              dateLabel: _displayMomentLabel(t),
+                              onTapDetails: () {
+                                _showTxDetailsSheet(
+                                  context,
+                                  t,
+                                  accountName,
+                                  accent,
+                                );
+                              },
+                              onEdit: () {
+                                Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (_) => AddEditTransactionScreen(
+                                      account:
+                                          acc ??
+                                          Account(
+                                            id: t.accountId,
+                                            name: accountName,
+                                            type:
+                                                t.companyMovementType != null
+                                                ? AccountType.company
+                                                : AccountType.office,
+                                          ),
+                                      existing: t,
                                     ),
-                                  );
-                                },
-                                onSetReceived: () async {
-                                  t.applyStatus(TransactionStatus.received);
-                                  await t.save();
-                                },
-                                onSetAdded: () async {
-                                  t.applyStatus(TransactionStatus.added);
-                                  await t.save();
-                                },
-                                onCancel: () async {
-                                  final ok = await _confirmCancel(context);
-                                  if (ok == true) {
-                                    if (t.companyMovementType != null) {
-                                      t.companyMovementType =
-                                          t.companyMovementType!.cancelled;
-                                      t.cancelledAt = DateTime.now();
-                                    } else {
-                                      t.applyStatus(
-                                        TransactionStatus.cancelled,
-                                      );
-                                    }
-                                    await t.save();
+                                  ),
+                                );
+                              },
+                              onSetReceived: () async {
+                                t.applyStatus(TransactionStatus.received);
+                                await t.save();
+                              },
+                              onSetAdded: () async {
+                                t.applyStatus(TransactionStatus.added);
+                                await t.save();
+                              },
+                              onCancel: () async {
+                                final ok = await _confirmCancel(context);
+                                if (ok == true) {
+                                  if (t.companyMovementType != null) {
+                                    t.companyMovementType =
+                                        t.companyMovementType!.cancelled;
+                                    t.cancelledAt = DateTime.now();
+                                  } else {
+                                    t.applyStatus(
+                                      TransactionStatus.cancelled,
+                                    );
                                   }
-                                },
-                                onDeleteFinal: () async {
-                                  await t.delete();
-                                },
-                                confirmDelete: () async {
-                                  final ok = await _confirmDelete(context);
-                                  return ok == true;
-                                },
-                              ),
+                                  await t.save();
+                                }
+                              },
+                              onDeleteFinal: () async {
+                                await t.delete();
+                              },
+                              confirmDelete: () async {
+                                final ok = await _confirmDelete(context);
+                                return ok == true;
+                              },
                             );
                           },
                         ),
+                        if (remainingSearchCount > 0)
+                          SliverToBoxAdapter(
+                            child: Padding(
+                              padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+                              child: Center(
+                                child: FilledButton.tonalIcon(
+                                  onPressed: () {
+                                    setState(() {
+                                      _visibleSearchLimit += _searchPageSize;
+                                    });
+                                  },
+                                  icon: const Icon(Icons.expand_more_rounded),
+                                  label: Text(
+                                    'عرض المزيد ($remainingSearchCount متبقية)',
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.w800,
+                                    ),
+                                  ),
+                                  style: FilledButton.styleFrom(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 22,
+                                      vertical: 12,
+                                    ),
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(16),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                      ],
                     ],
 
                     const SliverToBoxAdapter(child: SizedBox(height: 120)),
@@ -1628,6 +1732,17 @@ class _HomeScreenState extends State<HomeScreen> {
         controller: _searchCtrl,
         focusNode: _searchFocus,
         textInputAction: TextInputAction.search,
+        onSubmitted: (value) {
+          _debounce?.cancel();
+          final next = value.trim();
+          _liveQuery = next;
+          if (_query != next) {
+            setState(() {
+              _query = next;
+              _visibleSearchLimit = _searchPageSize;
+            });
+          }
+        },
         style: TextStyle(color: cs.onSurface, fontWeight: FontWeight.w600),
         decoration: InputDecoration(
           hintText: "ابحث عن حركة، حساب، عملة، تاريخ…",
@@ -1636,19 +1751,27 @@ class _HomeScreenState extends State<HomeScreen> {
           suffixIcon: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              if (_liveQuery.isNotEmpty)
-                IconButton(
-                  tooltip: 'مسح',
-                  onPressed: () {
-                    _searchCtrl.clear();
-                    _debounce?.cancel();
-                    setState(() {
-                      _liveQuery = '';
-                      _query = '';
-                    });
-                  },
-                  icon: Icon(Icons.close_rounded, color: cs.onSurfaceVariant),
-                ),
+              ValueListenableBuilder<TextEditingValue>(
+                valueListenable: _searchCtrl,
+                builder: (context, value, _) {
+                  if (value.text.trim().isEmpty) {
+                    return const SizedBox.shrink();
+                  }
+                  return IconButton(
+                    tooltip: 'مسح',
+                    onPressed: () {
+                      _searchCtrl.clear();
+                      _debounce?.cancel();
+                      setState(() {
+                        _liveQuery = '';
+                        _query = '';
+                        _visibleSearchLimit = _searchPageSize;
+                      });
+                    },
+                    icon: Icon(Icons.close_rounded, color: cs.onSurfaceVariant),
+                  );
+                },
+              ),
               IconButton(
                 tooltip: 'فلترة',
                 onPressed: () => _showSearchFilterSheet(context, accounts),
@@ -1695,43 +1818,58 @@ class _HomeScreenState extends State<HomeScreen> {
               selected: true,
               closable: true,
               accent: _focusColor(focus),
-              onTap: () => setState(() => _focus = null),
+              onTap: () => setState(() {
+                _focus = null;
+                _visibleSearchLimit = _searchPageSize;
+              }),
             ),
           _QuickChip(
             text: "الكل",
             selected: _quickFilter == _QuickStatusFilter.all,
-            onTap: () => setState(() => _quickFilter = _QuickStatusFilter.all),
+            onTap: () => setState(() {
+              _quickFilter = _QuickStatusFilter.all;
+              _visibleSearchLimit = _searchPageSize;
+            }),
           ),
           _QuickChip(
             text: "مضافة",
             icon: Icons.schedule_rounded,
             selected: _quickFilter == _QuickStatusFilter.added,
             accent: const Color(0xFF1E88E5),
-            onTap: () =>
-                setState(() => _quickFilter = _QuickStatusFilter.added),
+            onTap: () => setState(() {
+              _quickFilter = _QuickStatusFilter.added;
+              _visibleSearchLimit = _searchPageSize;
+            }),
           ),
           _QuickChip(
             text: "مستلمة",
             icon: Icons.check_circle_outline_rounded,
             selected: _quickFilter == _QuickStatusFilter.received,
             accent: const Color(0xFF00A76F),
-            onTap: () =>
-                setState(() => _quickFilter = _QuickStatusFilter.received),
+            onTap: () => setState(() {
+              _quickFilter = _QuickStatusFilter.received;
+              _visibleSearchLimit = _searchPageSize;
+            }),
           ),
           _QuickChip(
             text: "ملغية",
             icon: Icons.cancel_outlined,
             selected: _quickFilter == _QuickStatusFilter.cancelled,
             accent: const Color(0xFFE53935),
-            onTap: () =>
-                setState(() => _quickFilter = _QuickStatusFilter.cancelled),
+            onTap: () => setState(() {
+              _quickFilter = _QuickStatusFilter.cancelled;
+              _visibleSearchLimit = _searchPageSize;
+            }),
           ),
           _QuickChip(
             text: "اليوم",
             icon: Icons.today_rounded,
             selected: _todayOnly,
             accent: cs.primary,
-            onTap: () => setState(() => _todayOnly = !_todayOnly),
+            onTap: () => setState(() {
+              _todayOnly = !_todayOnly;
+              _visibleSearchLimit = _searchPageSize;
+            }),
           ),
           if (selectedAccount != null)
             _QuickChip(
@@ -1739,7 +1877,10 @@ class _HomeScreenState extends State<HomeScreen> {
               selected: true,
               closable: true,
               accent: _accountAccent(selectedAccount.id),
-              onTap: () => setState(() => _selectedAccountId = null),
+              onTap: () => setState(() {
+                _selectedAccountId = null;
+                _visibleSearchLimit = _searchPageSize;
+              }),
             ),
         ],
       ),
@@ -1931,12 +2072,14 @@ class _RankedTx {
   final Account? account;
   final String accountName;
   final int score;
+  final DateTime moment;
 
   const _RankedTx({
     required this.tx,
     required this.account,
     required this.accountName,
     required this.score,
+    required this.moment,
   });
 }
 

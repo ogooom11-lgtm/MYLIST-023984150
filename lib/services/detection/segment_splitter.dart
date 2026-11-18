@@ -8,7 +8,7 @@
 // (ملف Dart نقي بدون Flutter)
 // -------------------------------------------------------------
 
-import 'text_tokens.dart' show digitsOnly;
+import 'text_tokens.dart' show digitsOnly, stripInvisibleChars;
 
 /// مقطع خام قبل تحويله إلى نوع المقطع الخاص بكل شاشة
 class RawSegment {
@@ -33,8 +33,10 @@ class SegmentSplitter {
   SegmentSplitter._();
 
   /// هيدر واتساب عند نسخ الرسائل: [24/09, 10:30] الاسم:
+  /// (يدعم الأرقام العربية والفارسية والإنجليزية، والسنة أو الثواني أو ص/م اختياريًا،
+  /// بعد إزالة الرموز الخفية مثل \u200F و \u200E و \u061C قبل المطابقة)
   static final RegExp whatsappHeader = RegExp(
-    r'\[\s*([0-9\u0660-\u0669]{1,2})\/[\u200F\u200E]?\s*([0-9\u0660-\u0669]{1,2})\s*[,،]\s*([0-9\u0660-\u0669]{1,2})\s*:\s*([0-9\u0660-\u0669]{2})\s*\]\s*([^:\n]+?)\s*:',
+    r'\[\s*([0-9\u0660-\u0669\u06F0-\u06F9]{1,2})\s*\/\s*([0-9\u0660-\u0669\u06F0-\u06F9]{1,2})(?:\s*\/\s*([0-9\u0660-\u0669\u06F0-\u06F9]{2,4}))?\s*[,،]\s*([0-9\u0660-\u0669\u06F0-\u06F9]{1,2})\s*:\s*([0-9\u0660-\u0669\u06F0-\u06F9]{2})(?:\s*:\s*[0-9\u0660-\u0669\u06F0-\u06F9]{2})?(?:\s*([AaPp]\.?\s?[Mm]\.?|ص|م|صباحا|مساء|مساءً|صباحًا))?\s*\]\s*([^:\n]+?)\s*:',
     multiLine: true,
   );
 
@@ -50,11 +52,12 @@ class SegmentSplitter {
   static String rowMarkerLine(String label) =>
       '$rowMarkerEdge ${label.trim()} $rowMarkerEdge';
 
-  static bool hasRowMarkers(String text) => rowMarker.hasMatch(text);
+  static bool hasRowMarkers(String text) =>
+      rowMarker.hasMatch(stripInvisibleChars(text));
 
   /// عدد رسائل واتساب (الهيدرات) في النص
   static int countWhatsappHeaders(String text) =>
-      whatsappHeader.allMatches(text.replaceAll('\r', '')).length;
+      whatsappHeader.allMatches(stripInvisibleChars(text)).length;
 
   /// يقسم النص إلى مقاطع.
   /// [headerlessLabel]: عنوان المقطع عندما لا يوجد أي هيدر (يختلف بين الشاشات).
@@ -63,7 +66,7 @@ class SegmentSplitter {
     String headerlessLabel = '',
     DateTime? now,
   }) {
-    final text = input.replaceAll('\r', '');
+    final text = stripInvisibleChars(input);
     final clock = now ?? DateTime.now();
     final markers = rowMarker.allMatches(text).toList();
     final headers = whatsappHeader.allMatches(text).toList();
@@ -154,22 +157,40 @@ class SegmentSplitter {
   static RawSegment _fromHeader(RegExpMatch m, String body, DateTime now) {
     final dd = _toInt(m.group(1)!);
     final mo = _toInt(m.group(2)!);
-    final hh = _toInt(m.group(3)!);
-    final mi = _toInt(m.group(4)!);
+    final yyRaw = m.group(3);
+    var hh = _toInt(m.group(4)!);
+    final mi = _toInt(m.group(5)!);
+    final ampm = m.group(6);
+    if (ampm != null && ampm.trim().isNotEmpty) {
+      final ap = ampm
+          .toLowerCase()
+          .replaceAll('.', '')
+          .replaceAll(' ', '');
+      final isPm = ap.startsWith('p') || ap == 'م' || ap.startsWith('مساء');
+      final isAm = ap.startsWith('a') || ap == 'ص' || ap.startsWith('صباح');
+      if (isPm && hh < 12) hh += 12;
+      if (isAm && hh == 12) hh = 0;
+    }
 
     DateTime? ts;
     try {
-      ts = DateTime(now.year, mo, dd, hh, mi);
-      // الهيدر لا يحتوي السنة: تاريخ بعد اليوم بأكثر من يومين يعني
-      // أن الرسالة من السنة الماضية (مثلًا رسائل كانون الأول تُحلَّل في كانون الثاني)
-      if (ts.isAfter(now.add(const Duration(days: 2)))) {
-        ts = DateTime(now.year - 1, mo, dd, hh, mi);
+      if (yyRaw != null && yyRaw.isNotEmpty) {
+        var yy = _toInt(yyRaw);
+        if (yy < 100) yy += 2000;
+        ts = DateTime(yy, mo, dd, hh, mi);
+      } else {
+        ts = DateTime(now.year, mo, dd, hh, mi);
+        // الهيدر لا يحتوي السنة: تاريخ بعد اليوم بأكثر من يومين يعني
+        // أن الرسالة من السنة الماضية (مثلًا رسائل كانون الأول تُحلَّل في كانون الثاني)
+        if (ts.isAfter(now.add(const Duration(days: 2)))) {
+          ts = DateTime(now.year - 1, mo, dd, hh, mi);
+        }
       }
     } catch (_) {}
 
     return RawSegment(
       header: m.group(0)!.trim(),
-      senderName: m.group(5)!.trim(),
+      senderName: m.group(7)!.trim(),
       timestamp: ts,
       lines: _lines(body),
     );
