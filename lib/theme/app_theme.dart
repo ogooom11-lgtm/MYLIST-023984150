@@ -1,8 +1,7 @@
-import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 
 class AppTheme {
-  static const _seed = Color(0xFF26A69A); // اللون الأساسي (Teal)
+  static const _seed = Color(0xFF26A69A); // Teal عصري
   static ThemeData light = ThemeData(
     useMaterial3: true,
     colorScheme: ColorScheme.fromSeed(seedColor: _seed, brightness: Brightness.light),

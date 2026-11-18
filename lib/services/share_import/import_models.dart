@@ -145,9 +145,6 @@ class ImportOptions {
   /// لاحقة تضاف لعنوان كل صف (مثال: اسم الملف عند استيراد عدة ملفات)
   final String labelSuffix;
 
-  /// صيغ هيدر مخصّصة من إعدادات المستخدم (للتعرف على هيدرات واتساب المعدّلة)
-  final List<String> customHeaderFormats;
-
   const ImportOptions({
     this.nameKeyword = 'المستفيد',
     this.amountKeyword = 'المبلغ',
@@ -155,14 +152,12 @@ class ImportOptions {
     this.amountKeywords = const ['المبلغ'],
     this.currencyWords = const [],
     this.labelSuffix = '',
-    this.customHeaderFormats = const [],
   });
 
   factory ImportOptions.fromSettings({
     required List<String> nameKeywords,
     required List<String> amountKeywords,
     required Map<String, String> currencyMap,
-    List<String> customHeaderFormats = const [],
   }) {
     final names = nameKeywords
         .map((e) => e.trim())
@@ -181,7 +176,6 @@ class ImportOptions {
         ...currencyMap.keys,
         ...currencyMap.values,
       }.map((e) => e.trim()).where((e) => e.isNotEmpty).toList(),
-      customHeaderFormats: List<String>.from(customHeaderFormats),
     );
   }
 
@@ -192,7 +186,6 @@ class ImportOptions {
     amountKeywords: amountKeywords,
     currencyWords: currencyWords,
     labelSuffix: labelSuffix ?? this.labelSuffix,
-    customHeaderFormats: customHeaderFormats,
   );
 
   static final RegExp _letters = RegExp(r'[a-zA-Z\u0621-\u064A]');

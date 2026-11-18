@@ -1029,18 +1029,6 @@ class _ParseTextScreenState extends State<ParseTextScreen>
                 color: a,
                 padding: const EdgeInsets.only(bottom: 10),
               ),
-              // زر «لصق وتحليل» مثبّت مع الشريط السفلي (يظهر دائمًا بلا تمرير)
-              _GradientActionButton(
-                label: 'لصق وتحليل الحساب تلقائيًا',
-                icon: Icons.content_paste_go_rounded,
-                colors: [
-                  a,
-                  Color.lerp(a, b, 0.5)!,
-                ],
-                height: 48,
-                onPressed: _isBusy ? null : _paste,
-              ),
-              const SizedBox(height: 10),
               Row(
                 children: [
                   Expanded(
@@ -1279,7 +1267,21 @@ class _ParseTextScreenState extends State<ParseTextScreen>
                                   radius: 22,
                                 ),
                               ),
-                              // زر «لصق وتحليل» انتقل إلى الشريط السفلي الثابت
+                              const SizedBox(height: 12),
+                              _GradientActionButton(
+                                label: 'لصق وتحليل الحساب تلقائيًا',
+                                icon: Icons.content_paste_go_rounded,
+                                colors: [
+                                  selectedColor,
+                                  Color.lerp(
+                                    selectedColor,
+                                    _palette(_selectedAccount).$2,
+                                    0.5,
+                                  )!,
+                                ],
+                                height: 50,
+                                onPressed: _isBusy ? null : _paste,
+                              ),
                             ],
                           ),
                         ),

@@ -20,60 +20,50 @@ import 'services/trace/trace_service.dart';
 import 'services/tx_history_service.dart';
 import 'widgets/app_messages.dart';
 
-/// تهيئة التطبيق الكاملة (قواعد البيانات والخدمات الخلفية) — تُستدعى مرة واحدة
-/// عند الإقلاع، وتبقى شاشة البداية ظاهرة حتى تنتهي فعليًا.
-Future<void> _bootstrap() async {
-  await Hive.initFlutter();
-
-  Hive.registerAdapter(TransactionStatusAdapter());
-  Hive.registerAdapter(AccountTypeAdapter());
-  Hive.registerAdapter(CompanyMovementTypeAdapter());
-  Hive.registerAdapter(AccountAdapter());
-  Hive.registerAdapter(TransactionModelAdapter());
-  Hive.registerAdapter(BubbleQuickActionConfigAdapter());
-  Hive.registerAdapter(SettingsAdapter());
-  Hive.registerAdapter(ParsedTextAdapter());
-
-  await DatabaseService.init();
-
-  // شكل ومكان رسائل النجاح والخطأ (من الإعدادات)
-  AppMessages.load();
-
-  // سجل تعديلات الحركات: يراقب كل تغيير على الحركات من أي شاشة
-  try {
-    TxHistoryService.start();
-  } catch (e) {
-    debugPrint('TxHistory start error: $e');
-  }
-
-  // تتبّع مصدر الحركة (شركة ← مكتب): يحسب بالخلفية ويتحدث مع كل تغيير
-  try {
-    TraceService.start();
-  } catch (e) {
-    debugPrint('Trace start error: $e');
-  }
-}
-
-void main() {
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  runApp(const MyApp());
-}
 
-class MyApp extends StatefulWidget {
-  const MyApp({super.key});
+  try {
+    await Hive.initFlutter();
 
-  @override
-  State<MyApp> createState() => _MyAppState();
-}
+    Hive.registerAdapter(TransactionStatusAdapter());
+    Hive.registerAdapter(AccountTypeAdapter());
+    Hive.registerAdapter(CompanyMovementTypeAdapter());
+    Hive.registerAdapter(AccountAdapter());
+    Hive.registerAdapter(TransactionModelAdapter());
+    Hive.registerAdapter(BubbleQuickActionConfigAdapter());
+    Hive.registerAdapter(SettingsAdapter());
+    Hive.registerAdapter(ParsedTextAdapter());
 
-class _MyAppState extends State<MyApp> {
-  Future<void> _bootstrapFuture = _bootstrap();
+    await DatabaseService.init();
 
-  void _retryBootstrap() {
-    setState(() {
-      _bootstrapFuture = _bootstrap();
-    });
+    // شكل ومكان رسائل النجاح والخطأ (من الإعدادات)
+    AppMessages.load();
+
+    // سجل تعديلات الحركات: يراقب كل تغيير على الحركات من أي شاشة
+    try {
+      TxHistoryService.start();
+    } catch (e) {
+      debugPrint('TxHistory start error: $e');
+    }
+
+    // تتبّع مصدر الحركة (شركة ← مكتب): يحسب بالخلفية ويتحدث مع كل تغيير
+    try {
+      TraceService.start();
+    } catch (e) {
+      debugPrint('Trace start error: $e');
+    }
+
+    runApp(const MyApp());
+  } catch (e, s) {
+    debugPrint('Startup error: $e');
+    debugPrintStack(stackTrace: s);
+    rethrow;
   }
+}
+
+class MyApp extends StatelessWidget {
+  const MyApp({super.key});
 
   @override
   Widget build(BuildContext context) {
@@ -88,25 +78,14 @@ class _MyAppState extends State<MyApp> {
         // كل رسائل النجاح والخطأ بتنعرض بشكل موحّد وبالمكان المختار
         builder: (context, child) =>
             StyledScaffoldMessenger(child: child ?? const SizedBox.shrink()),
-        home: StartupSignatureScreen(
-          bootstrap: _bootstrapFuture,
-          onRetry: _retryBootstrap,
-        ),
+        home: const StartupSignatureScreen(),
       ),
     );
   }
 }
 
 class StartupSignatureScreen extends StatefulWidget {
-  /// مهمة تجهيز التطبيق (تُنشأ من MyApp مرة وتُستبدل عند إعادة المحاولة)
-  final Future<void> bootstrap;
-  final VoidCallback onRetry;
-
-  const StartupSignatureScreen({
-    super.key,
-    required this.bootstrap,
-    required this.onRetry,
-  });
+  const StartupSignatureScreen({super.key});
 
   @override
   State<StartupSignatureScreen> createState() => _StartupSignatureScreenState();
@@ -117,20 +96,11 @@ class _StartupSignatureScreenState extends State<StartupSignatureScreen>
   late final AnimationController _controller;
   late final Animation<double> _write;
   late final Animation<double> _titleFade;
-
-  /// خلصت الأنيميشن (التوقيع + الشعار)
-  bool _animDone = false;
-
-  /// خلصت تهيئة التطبيق (قواعد البيانات والخدمات) فعليًا
-  bool _bootReady = false;
-
-  /// خطأ أثناء التهيئة — نعرض شاشة خطأ مع «إعادة المحاولة» بدل التعليق
-  Object? _bootError;
+  bool _done = false;
 
   @override
   void initState() {
     super.initState();
-    _watchBootstrap(widget.bootstrap);
     _controller = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 2200),
@@ -147,39 +117,8 @@ class _StartupSignatureScreenState extends State<StartupSignatureScreen>
     _controller.forward();
     Future<void>.delayed(const Duration(milliseconds: 2750), () {
       if (!mounted) return;
-      setState(() => _animDone = true);
+      setState(() => _done = true);
     });
-  }
-
-  /// يربط نتيجة مهمة الإقلاع بالحالة (نجاح/خطأ)
-  void _watchBootstrap(Future<void> future) {
-    future.then((_) {
-      if (!mounted) return;
-      setState(() {
-        _bootReady = true;
-        _bootError = null;
-      });
-    }).catchError((Object e, StackTrace s) {
-      debugPrint('Startup error: $e');
-      debugPrintStack(stackTrace: s);
-      if (!mounted) return;
-      setState(() {
-        _bootReady = false;
-        _bootError = e;
-      });
-    });
-  }
-
-  @override
-  void didUpdateWidget(StartupSignatureScreen oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.bootstrap != widget.bootstrap) {
-      setState(() {
-        _bootReady = false;
-        _bootError = null;
-      });
-      _watchBootstrap(widget.bootstrap);
-    }
   }
 
   @override
@@ -197,24 +136,12 @@ class _StartupSignatureScreenState extends State<StartupSignatureScreen>
     final ink = isDark ? const Color(0xFFEFEFEB) : const Color(0xFF242526);
     final mutedInk = isDark ? const Color(0xFFBEBEB8) : const Color(0xFF686A6B);
 
-    // التطبيق الأساسي لا يظهر إلا بعد اكتمال الأنيميشن واكتمال تهيئة
-    // التطبيق الحقيقية معًا (بدل مدة ثابتة لا تعكس التحميل الفعلي)
-    final readyToEnter = _animDone && _bootReady && _bootError == null;
-
     return AnimatedSwitcher(
       duration: const Duration(milliseconds: 520),
       switchInCurve: Curves.easeOutCubic,
       switchOutCurve: Curves.easeInCubic,
-      child: readyToEnter
+      child: _done
           ? const MainLayout()
-          : _bootError != null
-          ? _StartupErrorView(
-              background: background,
-              ink: ink,
-              mutedInk: mutedInk,
-              error: _bootError!,
-              onRetry: widget.onRetry,
-            )
           : Scaffold(
               key: const ValueKey('startup-signature'),
               backgroundColor: background,
@@ -272,65 +199,6 @@ class _StartupSignatureScreenState extends State<StartupSignatureScreen>
                 },
               ),
             ),
-    );
-  }
-}
-
-/// شاشة خطأ الإقلاع: تُعرض بدل التعليق على السبلاش عند فشل التهيئة،
-/// مع زر لإعادة المحاولة.
-class _StartupErrorView extends StatelessWidget {
-  final Color background;
-  final Color ink;
-  final Color mutedInk;
-  final Object error;
-  final VoidCallback onRetry;
-
-  const _StartupErrorView({
-    required this.background,
-    required this.ink,
-    required this.mutedInk,
-    required this.error,
-    required this.onRetry,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      key: const ValueKey('startup-error'),
-      backgroundColor: background,
-      body: Center(
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 32),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(Icons.error_outline_rounded, size: 56, color: mutedInk),
-              const SizedBox(height: 18),
-              Text(
-                'تعذر فتح التطبيق',
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  color: ink,
-                  fontSize: 20,
-                  fontWeight: FontWeight.w800,
-                ),
-              ),
-              const SizedBox(height: 10),
-              Text(
-                'حدث خطأ أثناء تجهيز البيانات. جرّب مرة ثانية.',
-                textAlign: TextAlign.center,
-                style: TextStyle(color: mutedInk, fontSize: 13.5, height: 1.5),
-              ),
-              const SizedBox(height: 22),
-              FilledButton.icon(
-                onPressed: onRetry,
-                icon: const Icon(Icons.refresh_rounded),
-                label: const Text('إعادة المحاولة'),
-              ),
-            ],
-          ),
-        ),
-      ),
     );
   }
 }

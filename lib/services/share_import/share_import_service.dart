@@ -66,7 +66,6 @@ class ShareImportService {
         nameKeywords: s.nameKeywords,
         amountKeywords: s.amountKeywords,
         currencyMap: s.currencyMap,
-        customHeaderFormats: s.customHeaderFormats,
       );
     } catch (_) {
       return const ImportOptions();

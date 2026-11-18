@@ -2,19 +2,13 @@
 // -------------------------------------------------------------
 // تقسيم النص إلى رسائل (مقاطع) — مشترك بين شاشة الفقاعات وشاشة التسليم:
 // 1) هيدر واتساب المنسوخ:  [24/09, 10:30] الاسم: ...
-// 2) صيغ مخصّصة يكتبها المستخدم في الإعدادات (قسم «صيغ الرسائل») بنفس
-//    القوالب، مثل:  ‏[{day}/{month}، {hour}:{minute}] {name}:‏
-// 3) فاصل صفوف الملفات المستوردة:  —— صف 5 ——
+// 2) فاصل صفوف الملفات المستوردة:  —— صف 5 ——
 //    (يضيفه محوّل الملفات حتى يصبح كل صف في Excel/CSV رسالة مستقلة)
 // النص بدون أي هيدر أو فاصل = رسالة واحدة (نفس السلوك القديم تمامًا).
 // (ملف Dart نقي بدون Flutter)
 // -------------------------------------------------------------
 
-import 'header_format.dart';
 import 'text_tokens.dart' show digitsOnly;
-
-export 'header_format.dart'
-    show HeaderFormat, HeaderFormatException, HeaderFormatSuggestion, HeaderFormats;
 
 /// مقطع خام قبل تحويله إلى نوع المقطع الخاص بكل شاشة
 class RawSegment {
@@ -39,9 +33,10 @@ class SegmentSplitter {
   SegmentSplitter._();
 
   /// هيدر واتساب عند نسخ الرسائل: [24/09, 10:30] الاسم:
-  /// (نفس الصيغة المضمّنة في HeaderFormats — يتعرف أيضًا على الصيغ التي
-  /// يكتبها المستخدم في الإعدادات)
-  static final RegExp whatsappHeader = HeaderFormats.builtIn().pattern;
+  static final RegExp whatsappHeader = RegExp(
+    r'\[\s*([0-9\u0660-\u0669]{1,2})\/[\u200F\u200E]?\s*([0-9\u0660-\u0669]{1,2})\s*[,،]\s*([0-9\u0660-\u0669]{1,2})\s*:\s*([0-9\u0660-\u0669]{2})\s*\]\s*([^:\n]+?)\s*:',
+    multiLine: true,
+  );
 
   static const String rowMarkerEdge = '——';
 
@@ -58,49 +53,20 @@ class SegmentSplitter {
   static bool hasRowMarkers(String text) => rowMarker.hasMatch(text);
 
   /// عدد رسائل واتساب (الهيدرات) في النص
-  static int countWhatsappHeaders(String text, {List<String>? customFormats}) =>
-      _findHeaders(text.replaceAll('\r', ''), customFormats).length;
-
-  /// كل تطابقات الهيدر (المضمّن + المخصّص) بدون تداخل، مرتبة بالظهور.
-  /// عند تطابق أكثر من صيغة على نفس الموضع تُفضّل المضمّنة، ثم الأطول.
-  static List<_HeaderHit> _findHeaders(String text, List<String>? custom) {
-    final formats = HeaderFormats.all(custom ?? const []);
-    final hits = <_HeaderHit>[];
-    for (var i = 0; i < formats.length; i++) {
-      for (final m in formats[i].pattern.allMatches(text)) {
-        hits.add(_HeaderHit(m, formats[i], i));
-      }
-    }
-    hits.sort((a, b) {
-      var c = a.match.start.compareTo(b.match.start);
-      if (c != 0) return c;
-      c = b.match.end.compareTo(a.match.end);
-      if (c != 0) return c;
-      return a.formatIndex.compareTo(b.formatIndex);
-    });
-    final out = <_HeaderHit>[];
-    var lastEnd = -1;
-    for (final h in hits) {
-      if (h.match.start < lastEnd) continue;
-      out.add(h);
-      lastEnd = h.match.end;
-    }
-    return out;
-  }
+  static int countWhatsappHeaders(String text) =>
+      whatsappHeader.allMatches(text.replaceAll('\r', '')).length;
 
   /// يقسم النص إلى مقاطع.
   /// [headerlessLabel]: عنوان المقطع عندما لا يوجد أي هيدر (يختلف بين الشاشات).
-  /// [customFormats]: قوالب الهيدر المخصّصة من الإعدادات (إن وجدت).
   static List<RawSegment> split(
     String input, {
     String headerlessLabel = '',
     DateTime? now,
-    List<String>? customFormats,
   }) {
     final text = input.replaceAll('\r', '');
     final clock = now ?? DateTime.now();
     final markers = rowMarker.allMatches(text).toList();
-    final headers = _findHeaders(text, customFormats);
+    final headers = whatsappHeader.allMatches(text).toList();
 
     if (markers.isEmpty) {
       if (headers.isEmpty) {
@@ -118,19 +84,19 @@ class SegmentSplitter {
       for (var i = 0; i < headers.length; i++) {
         final m = headers[i];
         final end = (i + 1 < headers.length)
-            ? headers[i + 1].match.start
+            ? headers[i + 1].start
             : text.length;
-        out.add(_fromHeader(m, text.substring(m.match.end, end), clock));
+        out.add(_fromHeader(m, text.substring(m.end, end), clock));
       }
       return out;
     }
 
     // نص فيه فواصل صفوف (وقد يحتوي أيضًا رسائل واتساب قبلها أو بعدها)
     final bounds = <_Bound>[
-      for (final m in markers) _Bound(m, true, null),
-      for (final h in headers)
-        if (!markers.any((k) => h.match.start < k.end && h.match.end > k.start))
-          _Bound(h.match, false, h.format),
+      for (final m in markers) _Bound(m, true),
+      for (final m in headers)
+        if (!markers.any((k) => m.start < k.end && m.end > k.start))
+          _Bound(m, false),
     ]..sort((a, b) => a.match.start.compareTo(b.match.start));
 
     final out = <RawSegment>[];
@@ -162,13 +128,7 @@ class SegmentSplitter {
           ),
         );
       } else {
-        out.add(
-          _fromHeader(
-            _HeaderHit(b.match, b.format!, 0),
-            body,
-            clock,
-          ),
-        );
+        out.add(_fromHeader(b.match, body, clock));
       }
     }
     return out;
@@ -191,63 +151,33 @@ class SegmentSplitter {
 
   static int _toInt(String s) => int.tryParse(digitsOnly(s)) ?? 0;
 
-  static RawSegment _fromHeader(_HeaderHit hit, String body, DateTime now) {
-    final m = hit.match;
-    final f = hit.format;
-
-    String? tok(String name) => f.valueOf(m, name);
+  static RawSegment _fromHeader(RegExpMatch m, String body, DateTime now) {
+    final dd = _toInt(m.group(1)!);
+    final mo = _toInt(m.group(2)!);
+    final hh = _toInt(m.group(3)!);
+    final mi = _toInt(m.group(4)!);
 
     DateTime? ts;
-    final hourTok = tok('hour');
-    final minuteTok = tok('minute');
-    if (hourTok != null || minuteTok != null) {
-      final dd = _toInt(tok('day') ?? '1');
-      final mo = _toInt(tok('month') ?? '1');
-      final yyTok = tok('year');
-      final hh = _toInt(hourTok ?? '0');
-      final mi = _toInt(minuteTok ?? '0');
-
-      try {
-        var year = now.year;
-        if (yyTok != null && yyTok.trim().isNotEmpty) {
-          var y = _toInt(yyTok);
-          // سنة بمنزلتين: 00-68 ← 2000-2068 ، 69-99 ← 1969-1999
-          if (y < 100) y += (y <= 68 ? 2000 : 1900);
-          year = y;
-        }
-        ts = DateTime(year, mo, dd, hh, mi);
-        // الهيدر لا يحتوي السنة: تاريخ بعد اليوم بأكثر من يومين يعني
-        // أن الرسالة من السنة الماضية (مثلًا رسائل كانون الأول تُحلَّل في كانون الثاني)
-        if (yyTok == null &&
-            ts.isAfter(now.add(const Duration(days: 2)))) {
-          ts = DateTime(now.year - 1, mo, dd, hh, mi);
-        }
-      } catch (_) {}
-    }
+    try {
+      ts = DateTime(now.year, mo, dd, hh, mi);
+      // الهيدر لا يحتوي السنة: تاريخ بعد اليوم بأكثر من يومين يعني
+      // أن الرسالة من السنة الماضية (مثلًا رسائل كانون الأول تُحلَّل في كانون الثاني)
+      if (ts.isAfter(now.add(const Duration(days: 2)))) {
+        ts = DateTime(now.year - 1, mo, dd, hh, mi);
+      }
+    } catch (_) {}
 
     return RawSegment(
       header: m.group(0)!.trim(),
-      senderName: (tok('name') ?? '').trim(),
+      senderName: m.group(5)!.trim(),
       timestamp: ts,
       lines: _lines(body),
     );
   }
 }
 
-/// تطابق هيدر مع صيغته (المضمّنة أو مخصّصة)
-class _HeaderHit {
-  final RegExpMatch match;
-  final HeaderFormat format;
-
-  /// ترتيب الصيغة في القائمة (المضمّنة = 0) — لفك التعادل
-  final int formatIndex;
-
-  const _HeaderHit(this.match, this.format, this.formatIndex);
-}
-
 class _Bound {
   final RegExpMatch match;
   final bool isMarker;
-  final HeaderFormat? format;
-  const _Bound(this.match, this.isMarker, this.format);
+  const _Bound(this.match, this.isMarker);
 }

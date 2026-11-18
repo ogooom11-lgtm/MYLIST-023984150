@@ -37,26 +37,9 @@ class _HomeScreenState extends State<HomeScreen> {
   final FocusNode _searchFocus = FocusNode();
 
   Timer? _debounce;
+  String _liveQuery = '';
   String _query = '';
   bool _searchFocused = false;
-
-  // أقفال تغيّر صناديق Hive (تزداد مع أي تعديل على الحركات/الحسابات)
-  int _txStamp = 0;
-  int _accStamp = 0;
-  late final VoidCallback _txStampListener = () => _txStamp++;
-  late final VoidCallback _accStampListener = () => _accStamp++;
-
-  // نتائج وإحصائيات محفوظة: لا يُعاد حسابها إلا عند تغيّر البيانات أو الاستعلام
-  String? _statsMemoKey;
-  ({
-    Map<int, _AccountStats> statsByAccount,
-    int addedToday,
-    int receivedToday,
-    int cancelledToday,
-    int pendingTotal,
-  })? _statsMemo;
-  String? _searchMemoKey;
-  List<_RankedTx>? _searchMemo;
 
   _QuickStatusFilter _quickFilter = _QuickStatusFilter.all;
   bool _todayOnly = false;
@@ -85,34 +68,24 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     _searchCtrl.addListener(() {
-      // لا setState عند كل حرف: الحقل نفسه يعرض النص، وزر المسح يتحدث
-      // عبر ValueListenableBuilder خاص به، والاستعلام يتفعّل بعد توقف قصير
+      _liveQuery = _searchCtrl.text.trim();
       _debounce?.cancel();
       _debounce = Timer(const Duration(milliseconds: 220), () {
         if (!mounted) return;
-        setState(() => _query = _searchCtrl.text.trim());
+        setState(() => _query = _liveQuery);
       });
+      if (mounted) setState(() {});
     });
 
     _searchFocus.addListener(() {
       if (!mounted) return;
       setState(() => _searchFocused = _searchFocus.hasFocus);
     });
-
-    // أقفال تغيّر الصناديق لإبطال الكاش عند أي تعديل من أي شاشة
-    DatabaseService.transactionsBox.listenable().addListener(_txStampListener);
-    DatabaseService.accountsBox.listenable().addListener(_accStampListener);
   }
 
   @override
   void dispose() {
     _debounce?.cancel();
-    DatabaseService.transactionsBox
-        .listenable()
-        .removeListener(_txStampListener);
-    DatabaseService.accountsBox
-        .listenable()
-        .removeListener(_accStampListener);
     _searchCtrl.dispose();
     _searchFocus.dispose();
     _notesSub?.cancel();
@@ -220,6 +193,7 @@ class _HomeScreenState extends State<HomeScreen> {
     _searchCtrl.clear();
     _debounce?.cancel();
     setState(() {
+      _liveQuery = '';
       _query = '';
       _quickFilter = _QuickStatusFilter.all;
       _todayOnly = false;
@@ -596,103 +570,9 @@ class _HomeScreenState extends State<HomeScreen> {
     ];
 
     final blob = _normalizeText(parts.join(' '));
-    // سقف بسيط حتى لا يتضخم الكاش مع كثرة الحركات المحذوفة/المعدّلة
-    if (_searchBlobCache.length > 4000) {
-      _searchBlobCache.clear();
-      _searchStampCache.clear();
-    }
     _searchStampCache[key] = stamp;
     _searchBlobCache[key] = blob;
     return blob;
-  }
-
-  String _todayKey() {
-    final n = DateTime.now();
-    return '${n.year}-${n.month}-${n.day}';
-  }
-
-  /// ملخص اليوم + إحصائيات كل حساب — محفوظة حسب قفل البيانات واليوم الحالي
-  /// (نفس منطق صفحة الإحصائيات: الإضافة بتاريخ الإضافة، والإلغاء بتاريخ
-  /// الإلغاء)
-  ({
-    Map<int, _AccountStats> statsByAccount,
-    int addedToday,
-    int receivedToday,
-    int cancelledToday,
-    int pendingTotal,
-  }) _todayStats(List<TransactionModel> allTx, DateTime now) {
-    final cacheKey = '$_txStamp|${_todayKey()}';
-    final cached = _statsMemo;
-    if (cached != null && _statsMemoKey == cacheKey) return cached;
-
-    final statsByAccount = <int, _AccountStats>{};
-    var addedToday = 0;
-    var receivedToday = 0;
-    var cancelledToday = 0;
-    var pendingTotal = 0;
-
-    for (final tx in allTx) {
-      final st = statsByAccount.putIfAbsent(
-        tx.accountId,
-        _AccountStats.new,
-      );
-      st.total++;
-      if (_isSameDay(tx.date, now)) {
-        st.today++;
-        addedToday++;
-      }
-      if (_isPendingTx(tx)) {
-        st.pending++;
-        pendingTotal++;
-      }
-      if (tx.companyMovementType == null &&
-          tx.receivedAt != null &&
-          _isSameDay(tx.receivedAt!, now)) {
-        receivedToday++;
-      }
-      final cancelAt = _cancelMomentOf(tx);
-      if (cancelAt != null && _isSameDay(cancelAt, now)) {
-        cancelledToday++;
-      }
-      final last = _lastActivityOf(tx);
-      final prev = st.lastActivity;
-      if (prev == null || last.isAfter(prev)) st.lastActivity = last;
-    }
-
-    final memo = (
-      statsByAccount: statsByAccount,
-      addedToday: addedToday,
-      receivedToday: receivedToday,
-      cancelledToday: cancelledToday,
-      pendingTotal: pendingTotal,
-    );
-    _statsMemoKey = cacheKey;
-    _statsMemo = memo;
-    return memo;
-  }
-
-  /// نتائج البحث — محفوظة حسب الاستعلام + الفلاتر + قفل البيانات
-  List<_RankedTx> _searchResults(
-    List<TransactionModel> allTx,
-    Map<int, Account> accountsById,
-  ) {
-    final cacheKey = [
-      _query,
-      _quickFilter.index,
-      _todayOnly ? 1 : 0,
-      _selectedAccountId ?? -1,
-      _focus?.index ?? -1,
-      _txStamp,
-      _accStamp,
-      _todayKey(),
-    ].join('|');
-    final cached = _searchMemo;
-    if (cached != null && _searchMemoKey == cacheKey) return cached;
-
-    final results = _buildSearchResults(allTx, accountsById);
-    _searchMemoKey = cacheKey;
-    _searchMemo = results;
-    return results;
   }
 
   _ParsedSmartQuery _parseSmartQuery(String raw) {
@@ -1291,18 +1171,46 @@ class _HomeScreenState extends State<HomeScreen> {
           valueListenable: DatabaseService.transactionsBox.listenable(),
           builder: (context, Box<TransactionModel> txBox, _) {
             final allTx = txBox.values.toList();
-            final now = DateTime.now();
             final searchResults = _hasActiveSearch
-                ? _searchResults(allTx, accountsById)
-                : const <_RankedTx>[];
+                ? _buildSearchResults(allTx, accountsById)
+                : <_RankedTx>[];
 
-            // ملخص اليوم + إحصائيات كل حساب — من الكاش عند عدم تغيّر البيانات
-            final todayStats = _todayStats(allTx, now);
-            final statsByAccount = todayStats.statsByAccount;
-            final addedToday = todayStats.addedToday;
-            final receivedToday = todayStats.receivedToday;
-            final cancelledToday = todayStats.cancelledToday;
-            final pendingTotal = todayStats.pendingTotal;
+            // ملخص اليوم + إحصائيات كل حساب (نفس منطق صفحة الإحصائيات:
+            // الإضافة بتاريخ الإضافة، والإلغاء بتاريخ الإلغاء)
+            final now = DateTime.now();
+            final statsByAccount = <int, _AccountStats>{};
+            var addedToday = 0;
+            var receivedToday = 0;
+            var cancelledToday = 0;
+            var pendingTotal = 0;
+
+            for (final tx in allTx) {
+              final st = statsByAccount.putIfAbsent(
+                tx.accountId,
+                _AccountStats.new,
+              );
+              st.total++;
+              if (_isSameDay(tx.date, now)) {
+                st.today++;
+                addedToday++;
+              }
+              if (_isPendingTx(tx)) {
+                st.pending++;
+                pendingTotal++;
+              }
+              if (tx.companyMovementType == null &&
+                  tx.receivedAt != null &&
+                  _isSameDay(tx.receivedAt!, now)) {
+                receivedToday++;
+              }
+              final cancelAt = _cancelMomentOf(tx);
+              if (cancelAt != null && _isSameDay(cancelAt, now)) {
+                cancelledToday++;
+              }
+              final last = _lastActivityOf(tx);
+              final prev = st.lastActivity;
+              if (prev == null || last.isAfter(prev)) st.lastActivity = last;
+            }
 
             final showSegments =
                 officeAccounts.isNotEmpty && companyAccounts.isNotEmpty;
@@ -1728,21 +1636,19 @@ class _HomeScreenState extends State<HomeScreen> {
           suffixIcon: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              ValueListenableBuilder<TextEditingValue>(
-                valueListenable: _searchCtrl,
-                builder: (context, value, _) {
-                  if (value.text.isEmpty) return const SizedBox.shrink();
-                  return IconButton(
-                    tooltip: 'مسح',
-                    onPressed: () {
-                      _searchCtrl.clear();
-                      _debounce?.cancel();
-                      setState(() => _query = '');
-                    },
-                    icon: Icon(Icons.close_rounded, color: cs.onSurfaceVariant),
-                  );
-                },
-              ),
+              if (_liveQuery.isNotEmpty)
+                IconButton(
+                  tooltip: 'مسح',
+                  onPressed: () {
+                    _searchCtrl.clear();
+                    _debounce?.cancel();
+                    setState(() {
+                      _liveQuery = '';
+                      _query = '';
+                    });
+                  },
+                  icon: Icon(Icons.close_rounded, color: cs.onSurfaceVariant),
+                ),
               IconButton(
                 tooltip: 'فلترة',
                 onPressed: () => _showSearchFilterSheet(context, accounts),

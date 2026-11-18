@@ -275,7 +275,6 @@ class ReceiptExtractor {
       keys,
       start,
       forbiddenIdx: nameConfig.forbiddenMask(keys),
-      tokens: line.tokens,
       extraStop: (i) => line.isNoise(i) || line.mergedContaining(i) != null,
     );
     if (span.isNotEmpty) return span;

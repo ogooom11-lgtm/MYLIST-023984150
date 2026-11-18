@@ -243,10 +243,7 @@ class ImportFileConverter {
       }
     }
 
-    final waCount = SegmentSplitter.countWhatsappHeaders(
-      trimmed,
-      customFormats: o.customHeaderFormats,
-    );
+    final waCount = SegmentSplitter.countWhatsappHeaders(trimmed);
     if (waCount > 0) {
       return ImportConversion(
         fileName: fileName,
