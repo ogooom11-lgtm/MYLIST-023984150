@@ -107,6 +107,7 @@ class _BubbleScreenState extends State<BubbleScreen> {
 
   // المقاطع
   late List<ParsedSegment> _segments;
+  bool _confirmingExit = false;
 
   // الإعدادات
   late Settings _settings;
@@ -8846,6 +8847,41 @@ class _BubbleScreenState extends State<BubbleScreen> {
     );
   }
 
+  Future<void> _confirmAndExit() async {
+    // لا نسمح بالخروج أثناء الحفظ حتى لا تنقطع العملية في منتصفها
+    if (_isSending || _confirmingExit || !mounted) return;
+    _confirmingExit = true;
+    try {
+      final leave = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => Directionality(
+          textDirection: TextDirection.rtl,
+          child: AlertDialog(
+            title: const Text('تأكيد الخروج'),
+            content: const Text(
+              'هل تريد الخروج من هذه الصفحة؟ قد تفقد التحديدات غير المحفوظة.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('البقاء'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(ctx, true),
+                child: const Text('خروج'),
+              ),
+            ],
+          ),
+        ),
+      );
+      if (leave == true && mounted) {
+        Navigator.of(context).pop();
+      }
+    } finally {
+      _confirmingExit = false;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final addReadyCount = _readyAddCount();
@@ -8887,8 +8923,11 @@ class _BubbleScreenState extends State<BubbleScreen> {
     return Directionality(
       textDirection: TextDirection.rtl,
       child: PopScope(
-        // لا نسمح بالخروج أثناء الحفظ حتى لا تنقطع العملية في منتصفها
-        canPop: !_isSending,
+        canPop: false,
+        onPopInvokedWithResult: (didPop, _) {
+          if (didPop) return;
+          _confirmAndExit();
+        },
         child: Scaffold(
           backgroundColor: _isCompanyAccount
               ? (isDark ? const Color(0xFF181522) : const Color(0xFFF8F5FF))
