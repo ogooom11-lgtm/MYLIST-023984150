@@ -415,9 +415,6 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _isSameDay(DateTime a, DateTime b) =>
       a.year == b.year && a.month == b.month && a.day == b.day;
 
-  bool _isTodayTx(TransactionModel t) =>
-      _isSameDay(_displayMomentOf(t), DateTime.now());
-
   // ---------------- ملخص اليوم / تركيز النتائج ----------------
 
   /// لحظة إلغاء الحركة: للمكاتب تاريخ الإلغاء، وللشركات نفس منطق الإحصائيات.
@@ -438,9 +435,6 @@ class _HomeScreenState extends State<HomeScreen> {
     if (c != null && c.isAfter(m)) m = c;
     return m;
   }
-
-  bool _matchesFocus(TransactionModel t) =>
-      _matchesFocusWithNow(t, DateTime.now());
 
   bool _matchesFocusWithNow(TransactionModel t, DateTime now) {
     final focus = _focus;
